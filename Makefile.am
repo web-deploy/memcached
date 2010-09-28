@@ -31,6 +31,10 @@ if ENABLE_SASL
 memcached_SOURCES += sasl_defs.c
 endif
 
+if BUILD_SFLOW
+memcached_SOURCES += sflow.h sflow_api.c sflow_api.h sflow_mc.c sflow_mc.h
+endif
+
 memcached_debug_SOURCES = $(memcached_SOURCES)
 memcached_CPPFLAGS = -DNDEBUG
 memcached_debug_LDADD = @PROFILER_LDFLAGS@
