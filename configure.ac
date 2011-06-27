@@ -488,13 +488,13 @@ AC_PATH_PROG([XSLTPROC], [xsltproc], "no")
 AM_CONDITIONAL([BUILD_SPECIFICATIONS],
                [test "x$enable_docs" != "xno" -a "x$XML2RFC" != "xno" -a "x$XSLTPROC" != "xno"])
 
-dnl Option to include sFlow
+dnl Option to disable sFlow
 AC_ARG_ENABLE(sflow,
-  [AS_HELP_STRING([--enable-sflow],[Include sFlow instrumentation])])
-if test "x$enable_sflow" = "xyes"; then
-  AC_DEFINE([ENABLE_SFLOW],1,[Set to nonzero if you want to include sFlow])
+  [AS_HELP_STRING([--disable-sflow],[Disable sFlow instrumentation])])
+if test "x$enable_sflow" != "xno"; then
+  AC_DEFINE([ENABLE_SFLOW],1,[Set to nonzero for sFlow])
 fi
-AM_CONDITIONAL([BUILD_SFLOW],[test "x$enable_sflow" = "xyes"])
+AM_CONDITIONAL([BUILD_SFLOW],[test "x$enable_sflow" != "xno"])
 
 dnl Let the compiler be a bit more picky. Please note that you cannot
 dnl specify these flags to the compiler before AC_CHECK_FUNCS, because

@@ -580,27 +580,17 @@ void slab_stats_aggregate(struct thread_stats *stats, struct slab_stats *out) {
 }
 
 #ifdef ENABLE_SFLOW
-uint32_t sflow_skip_init(uint32_t *thread_skips) {
-    /* caller has the sFlow mutex, so we can safely
-       read out any unaccumulated sample_pool here.
-       thread->sflow_skip might change under our feet,
-       but only to decrement towards 0 */
-    uint32_t sample_pool = 0;
-    for (int ii = 0; ii < settings.num_threads; ++ii) {
-        if(threads[ii].sflow_last_skip > threads[ii].sflow_skip) {
-            sample_pool += (threads[ii].sflow_last_skip - threads[ii].sflow_skip);
-        }
-        threads[ii].sflow_last_skip = thread_skips[ii];
-
-        /* poor-mans atomic-set, for clarity/portability (does this actually work, though? $$$) */
-        uint32_t readafterwrite = 0;
-        do {
-            threads[ii].sflow_skip = thread_skips[ii];
-            readafterwrite = threads[ii].sflow_skip;
-        } while(readafterwrite != thread_skips[ii]);
-        
+/* do this specially because it does not require a lock to
+ * read these 32-bit numbers.  We don't really care that much
+ * if we get the value just before or just after it increments.
+ */
+uint32_t sflow_sample_pool_aggregate(void) {
+    int ii;
+    uint32_t pool = 0;
+    for (ii = 0; ii < settings.num_threads; ++ii) {
+        pool += threads[ii].sflow_sample_pool;
     }
-    return sample_pool;
+    return pool;
 }
 #endif
 

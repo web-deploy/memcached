@@ -47,10 +47,10 @@
 #include <sysexits.h>
 #include <stddef.h>
 
-#ifdef ENABLE_SFLOW
+/* include sflow_mc.h even if ENABLE_SFLOW is not defined
+   so that the SFLOW_SAMPLE macro can be defined to do 
+   something or be a no-op */
 #include "sflow_mc.h"
-static SFMC sFlow;
-#endif
 
 /* FreeBSD 4.x doesn't have IOV_MAX exposed. */
 #ifndef IOV_MAX
@@ -623,6 +623,7 @@ static void conn_set_state(conn *c, enum conn_states state) {
 
         if (state == conn_write || state == conn_mwrite) {
             MEMCACHED_PROCESS_COMMAND_END(c->sfd, c->wbuf, c->wbytes);
+            SFLOW_SAMPLE(SFMC_CMD_OTHER, c, NULL, 0, 0, -1, -1); // catch-all
         }
     }
 }
@@ -811,19 +812,8 @@ static void complete_nread_ascii(conn *c) {
         out_string(c, "CLIENT_ERROR bad data chunk");
     } else {
       ret = store_item(it, comm, c);
-      
-#ifdef ENABLE_SFLOW
-      if(SFLOW_SAMPLE_TEST(c)) {
-          sflow_sample(&sFlow, c, SFMC_PROT_ASCII,
-                       sflow_map_nread(c->cmd),
-                       ITEM_key(it),
-                       it->nkey,
-                       SFLOW_TOKENS_UNKNOWN,
-                       (ret == STORED) ? it->nbytes : 0,
-                       SFLOW_DURATION_UNKNOWN,
-                       sflow_map_status(ret));
-      }
-#endif
+
+      SFLOW_SAMPLE(SFMC_CMD_OTHER, c, ITEM_key(it), it->nkey, 0, (ret==STORED) ? it->nbytes : 0, ret);
 
 #ifdef ENABLE_DTRACE
       uint64_t cas = ITEM_get_cas(it);
@@ -1044,19 +1034,7 @@ static void complete_incr_bin(conn *c) {
 
     it = item_get(key, nkey);
 
-    
-#ifdef ENABLE_SFLOW
-    if(SFLOW_SAMPLE_TEST(c)) {
-        sflow_sample(&sFlow, c, SFMC_PROT_BINARY,
-                     SFMC_CMD_INCR,
-                     key,
-                     nkey,
-                     SFLOW_TOKENS_UNKNOWN,
-                     it ? it->nbytes : 0,
-                     SFLOW_DURATION_UNKNOWN,
-                     SFMC_OP_OK);
-    }
-#endif
+    SFLOW_SAMPLE(SFMC_CMD_INCR, c, key, nkey, 0, it ? it->nbytes : 0, EXISTS);
 
     if (it && (c->binary_header.request.cas == 0 ||
                c->binary_header.request.cas == ITEM_get_cas(it))) {
@@ -1141,19 +1119,8 @@ static void complete_update_bin(conn *c) {
     *(ITEM_data(it) + it->nbytes - 1) = '\n';
 
     ret = store_item(it, c->cmd, c);
-
-#ifdef ENABLE_SFLOW
-    if(SFLOW_SAMPLE_TEST(c)) {
-        sflow_sample(&sFlow, c, SFMC_PROT_BINARY,
-                     sflow_map_nread(c->cmd),
-                     ITEM_key(it),
-                     it->nkey,
-                     SFLOW_TOKENS_UNKNOWN,
-                     (ret == STORED) ? it->nbytes : 0,
-                     SFLOW_DURATION_UNKNOWN,
-                     sflow_map_status(ret));
-    }
-#endif
+    
+    SFLOW_SAMPLE(SFMC_CMD_OTHER, c, ITEM_key(it), it->nkey, 0, (ret == STORED) ? it->nbytes : 0, ret);
 
 #ifdef ENABLE_DTRACE
     uint64_t cas = ITEM_get_cas(it);
@@ -1224,18 +1191,9 @@ static void process_bin_get(conn *c) {
     }
 
     it = item_get(key, nkey);
-#ifdef ENABLE_SFLOW
-    if(SFLOW_SAMPLE_TEST(c)) {
-        sflow_sample(&sFlow, c, SFMC_PROT_BINARY,
-                     SFMC_CMD_GET,
-                     key,
-                     nkey,
-                     SFLOW_TOKENS_UNKNOWN,
-                     it ? it->nbytes : 0,
-                     SFLOW_DURATION_UNKNOWN,
-                     it ? SFMC_OP_OK : SFMC_OP_NOT_FOUND);
-    }
-#endif
+
+    SFLOW_SAMPLE(SFMC_CMD_GET, c, key, nkey, 0, it ? it->nbytes : 0, it ? EXISTS : NOT_FOUND);
+
     if (it) {
         /* the length has two unnecessary bytes ("\r\n") */
         uint16_t keylen = 0;
@@ -1417,18 +1375,7 @@ static void process_bin_stat(conn *c) {
         fprintf(stderr, "\n");
     }
 
-#ifdef ENABLE_SFLOW
-      if(SFLOW_SAMPLE_TEST(c)) {
-          sflow_sample(&sFlow, c, SFMC_PROT_BINARY,
-                       SFMC_CMD_STATS,
-                       NULL,
-                       0,
-                       SFLOW_TOKENS_UNKNOWN,
-                       0,
-                       SFLOW_DURATION_UNKNOWN,
-                       SFMC_OP_OK);
-      }
-#endif
+    SFLOW_SAMPLE(SFMC_CMD_STATS, c, NULL, 0, 0, 0, -1);
 
     if (nkey == 0) {
         /* request all statistics */
@@ -1745,6 +1692,7 @@ static void dispatch_bin_command(conn *c) {
     }
 
     MEMCACHED_PROCESS_COMMAND_START(c->sfd, c->rcurr, c->rbytes);
+    SFLOW_SAMPLE_TEST(c);
     c->noreply = true;
 
     /* binprot supports 16bit keys, but internals are still 8bit */
@@ -2051,18 +1999,7 @@ static void process_bin_flush(conn *c) {
         exptime = ntohl(req->message.body.expiration);
     }
 
-#ifdef ENABLE_SFLOW
-      if(SFLOW_SAMPLE_TEST(c)) {
-          sflow_sample(&sFlow, c, SFMC_PROT_BINARY,
-                       SFMC_CMD_FLUSH,
-                       NULL,
-                       0,
-                       SFLOW_TOKENS_UNKNOWN,
-                       0,
-                       SFLOW_DURATION_UNKNOWN,
-                       SFMC_OP_OK);
-      }
-#endif
+    SFLOW_SAMPLE(SFMC_CMD_FLUSH, c, NULL, 0, 0, 0, -1);
 
     set_current_time();
 
@@ -2100,18 +2037,7 @@ static void process_bin_delete(conn *c) {
 
     it = item_get(key, nkey);
 
-#ifdef ENABLE_SFLOW
-      if(SFLOW_SAMPLE_TEST(c)) {
-          sflow_sample(&sFlow, c, SFMC_PROT_BINARY,
-                       SFMC_CMD_DELETE,
-                       key,
-                       nkey,
-                       SFLOW_TOKENS_UNKNOWN,
-                       it ? it->nbytes : 0,
-                       SFLOW_DURATION_UNKNOWN,
-                       it ? SFMC_OP_OK : SFMC_OP_NOT_FOUND);
-      }
-#endif
+    SFLOW_SAMPLE(SFMC_CMD_DELETE, c, key, nkey, 0, it ? it->nbytes : 0, it ? EXISTS : NOT_FOUND);
 
     if (it) {
         uint64_t cas = ntohll(req->message.header.request.cas);
@@ -2649,18 +2575,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
                 stats_prefix_record_get(key, nkey, NULL != it);
             }
 
-#ifdef ENABLE_SFLOW
-            if(SFLOW_SAMPLE_TEST(c)) {
-                sflow_sample(&sFlow, c, SFMC_PROT_ASCII,
-                             return_cas ? SFMC_CMD_GETS : SFMC_CMD_GET,
-                             key,
-                             nkey,
-                             ntokens - 2,
-                             it ? it->nbytes : 0,
-                             SFLOW_DURATION_UNKNOWN,
-                             it ? SFMC_OP_OK : SFMC_OP_NOT_FOUND);
-            }
-#endif
+            SFLOW_SAMPLE(return_cas ? SFMC_CMD_GETS : SFMC_CMD_GET, c, key, nkey, ntokens-2, it ? it->nbytes : 0, it ? EXISTS : NOT_FOUND);
 
             if (it) {
                 if (i >= c->isize) {
@@ -2763,6 +2678,7 @@ static inline void process_get_command(conn *c, token_t *tokens, size_t ntokens,
         if(key_token->value != NULL) {
             ntokens = tokenize_command(key_token->value, tokens, MAX_TOKENS);
             key_token = tokens;
+            SFLOW_SAMPLE_TEST(c);
         }
 
     } while(key_token->value != NULL);
@@ -3069,6 +2985,7 @@ static void process_command(conn *c, char *command) {
     assert(c != NULL);
 
     MEMCACHED_PROCESS_COMMAND_START(c->sfd, c->rcurr, c->rbytes);
+    SFLOW_SAMPLE_TEST(c);
 
     if (settings.verbose > 1)
         fprintf(stderr, "<%d %s\n", c->sfd, command);
@@ -4157,9 +4074,7 @@ static void clock_handler(const int fd, const short which, void *arg) {
     evtimer_add(&clockevent, &t);
 
     set_current_time();
-#ifdef ENABLE_SFLOW
-    sflow_tick(&sFlow);
-#endif
+    SFLOW_TICK(current_time);
 }
 
 static void usage(void) {
@@ -4210,10 +4125,6 @@ static void usage(void) {
            "              (default: 1mb, min: 1k, max: 128m)\n");
 #ifdef ENABLE_SASL
     printf("-S            Turn on Sasl authentication\n");
-#endif
-#ifdef ENABLE_SFLOW
-    printf("-o sflow=on|off        -  enable sFlow monitoring\n");
-    printf("-o sflowconfig=<file>  -  config file (default /etc/sflow.auto)\n");
 #endif
     return;
 }
@@ -4460,9 +4371,6 @@ int main (int argc, char **argv) {
           "B:"  /* Binding protocol */
           "I:"  /* Max item size */
           "S"   /* Sasl ON */
-#ifdef ENABLE_SFLOW
-          "o:"  /* other var=val setting */
-#endif
         ))) {
         switch (c) {
         case 'a':
@@ -4625,15 +4533,6 @@ int main (int argc, char **argv) {
 #endif
             settings.sasl = true;
             break;
-#ifdef ENABLE_SFLOW
-        case 'o': /* other var=val arg */
-            if(strchr(optarg, '=') == NULL) {
-                fprintf(stderr, "-o option expects <var>=<value> arg\n");
-                exit(EX_USAGE);
-            }
-            sflow_processVarValueOption(&sFlow, optarg);
-            break;
-#endif
         default:
             fprintf(stderr, "Illegal argument \"%c\"\n", c);
             return 1;
@@ -4757,11 +4656,6 @@ int main (int argc, char **argv) {
     assoc_init();
     conn_init();
     slabs_init(settings.maxbytes, settings.factor, preallocate);
-#ifdef ENABLE_SFLOW
-    if(sFlow.enabled) {
-        sflow_init(&sFlow);
-    }
-#endif
 
     /*
      * ignore SIGPIPE signals; we can use errno == EPIPE if we

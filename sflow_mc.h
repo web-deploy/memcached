@@ -1,76 +1,53 @@
 #ifndef SFLOW_MC_H
 #define SFLOW_MC_H 1
 
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <string.h>
-#include <time.h>
-#include <errno.h>
-#include <sys/stat.h>
-#include <syslog.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <assert.h>
-
-#include <sys/wait.h>
-
+#include "config.h"
+//#include "memcached.h"
 #include <sys/types.h>
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h> /* for PRIu64 etc. */
-#include <pthread.h>
 
-#include "sflow_api.h"
-#define SFMC_VERSION "0.9"
-#define SFMC_DEFAULT_CONFIGFILE "/etc/hsflowd.auto"
-#define SFMC_MAX_TICKS 60
-#define SFMC_SEPARATORS " \t\r\n="
-#define SFMC_QUOTES "'\" \t\r\n"
-/* SFMC_MAX LINE LEN must be enough to hold the whole list of targets */
-#define SFMC_MAX_LINELEN 1024
-#define SFMC_MAX_COLLECTORS 10
+#ifdef ENABLE_SFLOW
 
-typedef struct _SFMCCollector {
-  struct sockaddr sa;
-  SFLAddress addr;
-  uint16_t port;
-  uint16_t priority;
-} SFMCCollector;
+typedef enum  {
+  SFMC_CMD_OTHER    = 0,
+  SFMC_CMD_SET      = 1,
+  SFMC_CMD_ADD      = 2,
+  SFMC_CMD_REPLACE  = 3,
+  SFMC_CMD_APPEND   = 4,
+  SFMC_CMD_PREPEND  = 5,
+  SFMC_CMD_CAS      = 6,
+  SFMC_CMD_GET      = 7,
+  SFMC_CMD_GETS     = 8,
+  SFMC_CMD_INCR     = 9,
+  SFMC_CMD_DECR     = 10,
+  SFMC_CMD_DELETE   = 11,
+  SFMC_CMD_STATS    = 12,
+  SFMC_CMD_FLUSH    = 13,
+  SFMC_CMD_VERSION  = 14,
+  SFMC_CMD_QUIT     = 15,
+} SFLMemcache_cmd;
 
-typedef struct _SFMCConfig {
-  int error;
-  uint32_t sampling_n;
-  uint32_t polling_secs;
-  SFLAddress agentIP;
-  uint32_t num_collectors;
-  SFMCCollector collectors[SFMC_MAX_COLLECTORS];
-} SFMCConfig;
+void sflow_tick(rel_time_t now);
+void sflow_sample_test(struct conn *c);
+void sflow_sample(SFLMemcache_cmd cmd, struct conn *c, const void *key, size_t keylen, uint32_t nkeys, size_t value_bytes, int status);
 
-typedef struct _SFMC {
-  pthread_mutex_t *mutex;
-  int enabled;
-  /* config */
-  char *configFile;
-  time_t configFile_modTime;
-  SFMCConfig *config;
-  uint32_t configTests;
-  /* sFlow agent */
-  SFLAgent *agent;
-  /* UDP send sockets */
-  int socket4;
-  int socket6;
-} SFMC;
+#define SFLOW_TICK(now) sflow_tick(now)
+#define SFLOW_SAMPLE_TEST(c) sflow_sample_test(c)
+#define SFLOW_SAMPLE(cmd, c, key, keylen, nkeys, bytes, status)		      \
+  do {									      \
+    if(unlikely((c)->sflow_start_time.tv_sec)) {			      \
+      sflow_sample((cmd), (c), (key), (keylen), (nkeys), (bytes), (status));  \
+    }									      \
+  } while(0)
 
-#define SFLOW_SAMPLE_TEST(c) (unlikely((--c->thread->sflow_skip)==0))
-void sflow_sample(SFMC *sm, struct conn *c, SFLMemcache_prot prot, SFLMemcache_cmd cmd, char *key, size_t keylen, uint32_t nkeys, size_t value_bytes, uint32_t duration_uS, uint32_t status);
-#define SFLOW_DURATION_UNKNOWN 0
-#define SFLOW_TOKENS_UNKNOWN 0
-void sflow_init(SFMC *sm);
-void sflow_tick(SFMC *sm);
-void sflow_processVarValueOption(SFMC *sm, char *optarg);
-SFLMemcache_operation_status sflow_map_status(enum store_item_type ret);
-SFLMemcache_cmd sflow_map_nread(int cmd);
+#else
+
+#define SFLOW_TICK(now)
+#define SFLOW_SAMPLE_TEST(c)
+#define SFLOW_SAMPLE(cmd, c, key, keylen, nkeys, bytes, slab_op)
+
+#endif
 
 #endif /* SFLOW_MC_H */
 

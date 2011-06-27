@@ -319,13 +319,13 @@ typedef struct {
     struct conn_queue *new_conn_queue; /* queue of new connections to handle */
     cache_t *suffix_cache;      /* suffix cache */
 #ifdef ENABLE_SFLOW
-    uint32_t sflow_skip;
-    uint32_t sflow_last_skip;
+    uint32_t sflow_sample_pool;
+    uint32_t sflow_random;
 #endif
 } LIBEVENT_THREAD;
 
 #ifdef ENABLE_SFLOW
-uint32_t sflow_skip_init(uint32_t *thread_skips);
+uint32_t sflow_sample_pool_aggregate(void); // in thread.c
 #endif
 
 typedef struct {
@@ -423,6 +423,9 @@ struct conn {
     int keylen;
     conn   *next;     /* Used for generating a list of conn structures */
     LIBEVENT_THREAD *thread; /* Pointer to the thread object serving this connection */
+#ifdef ENABLE_SFLOW
+    struct timeval sflow_start_time;
+#endif
 };
 
 
