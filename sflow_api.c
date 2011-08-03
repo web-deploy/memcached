@@ -636,8 +636,9 @@ static int sfl_receiver_writeFlowSample(SFLReceiver *receiver, SFL_FLOW_SAMPLE_T
 
     /* if the sample pkt is full enough so that this sample might put */
     /* it over the limit, then we should send it now before going on. */
-    if((receiver->sampleCollector.pktlen + packedSize) >= receiver->sFlowRcvrMaximumDatagramSize)
+    if((receiver->sampleCollector.pktlen + packedSize) >= receiver->sFlowRcvrMaximumDatagramSize) {
         sendSample(receiver);
+    }
     
     receiver->sampleCollector.numSamples++;
 

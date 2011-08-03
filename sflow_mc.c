@@ -136,22 +136,24 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
         return;
     }
 
+    // sm->mutex should already be acquired here (when we generate the tick)
+    
     SFLCounters_sample_element mcElem = { 0 };
     mcElem.tag = SFLCOUNTERS_MEMCACHE;
-
+        
     struct thread_stats thread_stats;
     threadlocal_stats_aggregate(&thread_stats);
     struct slab_stats slab_stats;
     slab_stats_aggregate(&thread_stats, &slab_stats);
-    
+        
 #ifndef WIN32
     struct rusage usage;
     getrusage(RUSAGE_SELF, &usage);
 #endif /* !WIN32 */
-
+        
     STATS_LOCK();
     mcElem.counterBlock.memcache.uptime = sm->tick;
-
+        
 #ifdef WIN32
     mcElem.counterBlock.memcache.rusage_user = 0xFFFFFFFF;
     mcElem.counterBlock.memcache.rusage_system = 0xFFFFFFFF;
@@ -159,7 +161,7 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
     mcElem.counterBlock.memcache.rusage_user = (usage.ru_utime.tv_sec * 1000) + (usage.ru_utime.tv_usec / 1000);
     mcElem.counterBlock.memcache.rusage_system = (usage.ru_stime.tv_sec * 1000) + (usage.ru_stime.tv_usec / 1000);
 #endif /* WIN32 */
-
+        
     mcElem.counterBlock.memcache.curr_connections = stats.curr_conns - 1;
     mcElem.counterBlock.memcache.total_connections = stats.total_conns;
     mcElem.counterBlock.memcache.connection_structures = stats.conn_structs;
@@ -188,9 +190,7 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
     mcElem.counterBlock.memcache.conn_yields = thread_stats.conn_yields;
     STATS_UNLOCK();
     SFLADD_ELEMENT(cs, &mcElem);
-    SEMLOCK_DO(sm->mutex) {
-        sfl_poller_writeCountersSample(poller, cs);
-    }
+    sfl_poller_writeCountersSample(poller, cs);
 }
 
 static SFLMemcache_prot sflow_map_protocol(enum protocol prot) {
@@ -321,33 +321,39 @@ void sflow_sample_test(struct conn *c) {
 void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size_t keylen, uint32_t nkeys, size_t value_bytes, int status)
 {
     SFMC *sm = &sfmc;
-    if(sm->config == NULL ||
-       sm->config->sampling_n == 0 ||
-       sm->agent == NULL ||
-       sm->agent->samplers == NULL) {
-        /* sFlow not configured yet - may be waiting for DNS-SD request */
+    SFLSampler *sampler = NULL;
+    
+    // use a semaphore to protect access to the config that might otherwise change under our feet
+    SEMLOCK_DO(sm->mutex) {
+        if(sm->config && sm->config->sampling_n && sm->agent && sm->agent->samplers) {
+            sampler = sm->agent->samplers;
+        }
+    }
+    
+    if(sampler == NULL) {
+        // not configured yet
         return;
     }
-    SFLSampler *sampler = sm->agent->samplers;
+
     struct timeval timenow,elapsed;
     gettimeofday(&timenow, NULL);
     timersub(&timenow, &c->sflow_start_time, &elapsed);
     timerclear(&c->sflow_start_time);
-    
+        
     SFL_FLOW_SAMPLE_TYPE fs = { 0 };
-
+        
     /* have to add up the pool from all the threads */
     fs.sample_pool = sflow_sample_pool_aggregate();
-    
+        
     /* indicate that I am the server by setting the
        destination interface to 0x3FFFFFFF=="internal"
        and leaving the source interface as 0=="unknown" */
     fs.output = 0x3FFFFFFF;
-            
+        
     SFLFlow_sample_element mcopElem = { 0 };
     mcopElem.tag = SFLFLOW_MEMCACHE;
     mcopElem.flowType.memcache.protocol = sflow_map_protocol(c->protocol);
-
+        
     // sometimes we pass the command in explicitly
     // otherwise we allow it to be inferred
     if(command == SFMC_CMD_OTHER) {
@@ -362,7 +368,7 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
         }
     }
     mcopElem.flowType.memcache.command = command;
-
+        
     mcopElem.flowType.memcache.key.str = (char *)key;
     mcopElem.flowType.memcache.key.len = (key ? keylen : 0);
     mcopElem.flowType.memcache.nkeys = (nkeys == 0) ? 1 : nkeys;
@@ -370,9 +376,9 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
     mcopElem.flowType.memcache.duration_uS = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
     mcopElem.flowType.memcache.status = sflow_map_status(status);
     SFLADD_ELEMENT(&fs, &mcopElem);
-    
+        
     SFLFlow_sample_element socElem = { 0 };
-    
+        
     if(c->transport == tcp_transport ||
        c->transport == udp_transport) {
         /* add a socket structure */
@@ -380,7 +386,7 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
         socklen_t localsoclen = sizeof(localsoc);
         struct sockaddr_storage peersoc;
         socklen_t peersoclen = sizeof(peersoc);
-        
+            
         /* ask the fd for the local socket - may have wildcards, but
            at least we may learn the local port */
         getsockname(c->sfd, (struct sockaddr *)&localsoc, &localsoclen);
@@ -393,11 +399,11 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
                this info is capture in the recvfrom() and given to us */
             memcpy(&peersoc, &c->request_addr, c->request_addr_size);
         }
-        
+            
         /* two possibilities here... */
         struct sockaddr_in *soc4 = (struct sockaddr_in *)&peersoc;
         struct sockaddr_in6 *soc6 = (struct sockaddr_in6 *)&peersoc;
-        
+            
         if(peersoclen == sizeof(*soc4) && soc4->sin_family == AF_INET) {
             struct sockaddr_in *lsoc4 = (struct sockaddr_in *)&localsoc;
             socElem.tag = SFLFLOW_EX_SOCKET4;
@@ -423,7 +429,6 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
             perror("sflow_sample() : unexpected socket length or address family");
         }
     }
-    
     SEMLOCK_DO(sm->mutex) {
         sfl_sampler_writeFlowSample(sampler, &fs);
     }
@@ -678,8 +683,8 @@ static void sfmc_apply_config(SFMC *sm, SFMCConfig *config)
     SFMCConfig *oldConfig = sm->config;
     SEMLOCK_DO(sm->mutex) {
         sm->config = config;
+        if(oldConfig) free(oldConfig);
     }
-    if(oldConfig) free(oldConfig);
     if(config) sflow_init(sm);
 }
     
@@ -722,7 +727,9 @@ void sflow_tick(rel_time_t current_time) {
     }
     
     if(sm->agent && sm->config) {
-        sfl_agent_tick(sm->agent, (time_t)sm->tick);
+        SEMLOCK_DO(sm->mutex) {
+            sfl_agent_tick(sm->agent, (time_t)sm->tick);
+        }
     }
 }
 
