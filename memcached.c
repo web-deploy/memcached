@@ -1058,9 +1058,12 @@ static void complete_incr_bin(conn *c) {
                 (long long)req->message.body.initial,
                 req->message.body.expiration);
     }
-
-    SFLOW_SAMPLE(SFMC_CMD_INCR, c, key, nkey, 0, it ? it->nbytes : 0, EXISTS);
-
+    
+    /* may need to move this down so we can pick up the status. At
+       the moment this is going to look like SFMC_CMD_INCR always
+       succeeds. */
+    SFLOW_SAMPLE(SFMC_CMD_INCR, c, key, nkey, 0, 0, EXISTS);
+    
     if (c->binary_header.request.cas != 0) {
         cas = c->binary_header.request.cas;
     }
