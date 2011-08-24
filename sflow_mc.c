@@ -769,7 +769,7 @@ static void sflow_init(SFMC *sm) {
         /* initialize the agent with it's address, bootime, callbacks etc. */
         sfl_agent_init(sm->agent,
                        &sm->config->agentIP,
-                       0, /* subAgentId */
+                       settings.port, /* subAgentId */
                        sm->tick,
                        sm->tick,
                        sm,
@@ -782,9 +782,9 @@ static void sflow_init(SFMC *sm) {
         SFLReceiver *receiver = sfl_agent_addReceiver(sm->agent);
         /* add a <logicalEntity> datasource to represent this application instance */
         SFLDataSource_instance dsi;
-        /* ds_class = <logicalEntity>, ds_index = 65537, ds_instance = 0 */
-        /* $$$ should learn the ds_index from the config file */
-        SFL_DS_SET(dsi, SFL_DSCLASS_LOGICAL_ENTITY, 65537, 0);
+        /* ds_class = <logicalEntity>, ds_index = <service port>, ds_instance = 0 */
+        /* set ds_index to the service port */
+        SFL_DS_SET(dsi, SFL_DSCLASS_LOGICAL_ENTITY, settings.port, 0);
 
         /* add a poller for the counters */
         SFLPoller *poller = sfl_agent_addPoller(sm->agent, &dsi, sm, sfmc_cb_counters);
