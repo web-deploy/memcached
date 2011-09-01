@@ -6,4 +6,7 @@ void assoc_delete(const char *key, const size_t nkey);
 void do_assoc_move_next_bucket(void);
 int start_assoc_maintenance_thread(void);
 void stop_assoc_maintenance_thread(void);
-
+#ifdef ENABLE_SFLOW
+typedef int (itemCB)(item *, int bkt, void *magic);
+int htWalk(itemCB *cbFn, int startBkt, int n, void *magic);
+#endif

@@ -2491,6 +2491,60 @@ static void process_stat_settings(ADD_STAT add_stats, void *c) {
     APPEND_STAT("item_size_max", "%d", settings.item_size_max);
 }
 
+#ifdef ENABLE_SFLOW
+
+/* support for experimental "htwalk" stats command */
+
+#define HTWALK_MAXBYTES (2 * 1024 * 1024)
+typedef struct _HTWalkbuffer {
+    char *buf;
+    int len;
+    int offset;
+    int full;
+    int n;
+} HTWalkBuffer;
+
+static int dumpItem(item *it, int bkt, void *magic) {
+    HTWalkBuffer *htwb = (HTWalkBuffer *)magic;
+    char scr[1024];
+    int len;
+    long secs_since_set, secs_to_expire;
+    
+    htwb->n++;
+
+    // first the numbers
+    secs_since_set = (it->time == 0) ? -1 : current_time - it->time;
+    secs_to_expire = (it->exptime == 0) ? -1 : it->exptime - current_time;
+    snprintf(scr, 1024, "%d %d %ld %ld %d ",
+             htwb->n,
+             bkt,
+             secs_since_set,
+             secs_to_expire,
+             it->nbytes - 2);
+    len = strlen(scr);
+    if(len > (htwb->len - htwb->offset)) {
+        htwb->full = 1;
+        return -1;
+    }
+    memcpy(htwb->buf + htwb->offset, scr, len);
+    htwb->offset += len;
+
+    // then the key and newline chars
+    len = it->nkey;
+    memcpy(scr, ITEM_key(it), len);
+    scr[len++] = '\r';
+    scr[len++] = '\n';
+    scr[len] = '\0';
+    if(len > (htwb->len - htwb->offset)) {
+        htwb->full = 1;
+        return -1;
+    }
+    memcpy(htwb->buf + htwb->offset, scr, len);
+    htwb->offset += len;
+    return 0;
+}
+#endif
+
 static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
     const char *subcommand = tokens[SUBCOMMAND_TOKEN].value;
     assert(c != NULL);
@@ -2540,6 +2594,46 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
         buf = item_cachedump(id, limit, &bytes);
         write_and_free(c, buf, bytes);
         return ;
+#ifdef ENABLE_SFLOW
+    } else if (strcmp(subcommand, "htwalk") == 0) {
+        HTWalkBuffer htwb;
+        unsigned int startBkt, samples, byteLimit;
+        char *endstr = "END\r\n";
+        memset(&htwb, 0, sizeof(htwb));
+        if (ntokens < 6) {
+            out_string(c, "CLIENT_ERROR bad command line");
+            return;
+        }
+        if (!safe_strtoul(tokens[2].value, &startBkt) ||
+            !safe_strtoul(tokens[3].value, &samples) ||
+            !safe_strtoul(tokens[4].value, &byteLimit)) {
+            out_string(c, "CLIENT_ERROR bad command line format");
+            return;
+        }
+        
+        if(byteLimit > HTWALK_MAXBYTES) {
+            byteLimit = HTWALK_MAXBYTES;
+        }
+        htwb.buf = (char *)malloc(byteLimit);
+        if(htwb.buf == NULL) {
+            out_string(c, "SERVER_ERROR cannot allocate buffer");
+            return;
+        }
+        htwb.len = byteLimit - strlen(endstr);
+        int ret = htWalk(dumpItem, startBkt, samples, (void *)&htwb);
+        char *errm = NULL;
+        if(ret == -1) errm = "SERVER_ERROR cache expanding - retry";
+        else if(htwb.full) errm = "CLIENT_ERROR buffer limit too small";
+        if(errm) {
+            out_string(c, errm);
+            free(htwb.buf);
+            return;
+        }
+        memcpy(htwb.buf + htwb.offset, endstr, strlen(endstr));
+        htwb.offset += strlen(endstr);
+        write_and_free(c, htwb.buf, htwb.offset);
+        return;
+#endif
     } else {
         /* getting here means that the subcommand is either engine specific or
            is invalid. query the engine and see. */

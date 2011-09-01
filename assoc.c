@@ -66,6 +66,45 @@ void assoc_init(void) {
     }
 }
 
+#ifdef ENABLE_SFLOW
+int htWalk(itemCB *cbFn, int startBkt, int n, void *magic) {
+    int stopBkt, bkt, maxBkt, walking, sampled;
+    time_t flushTime;
+    item *it;
+    pthread_mutex_lock(&cache_lock);
+    if(expanding) {
+        sampled = -1;
+    }
+    else {
+        maxBkt = hashsize(hashpower) - 1;
+        startBkt &= hashmask(hashpower);
+        stopBkt = startBkt == 0 ? maxBkt : (startBkt - 1);
+        sampled = 0;
+        flushTime = settings.oldest_live ? settings.oldest_live : current_time;
+        walking = 1;
+        for(bkt = startBkt; walking; ) {
+            for(it = primary_hashtable[bkt]; walking && it; it = it->h_next) {
+                // ignore items that are flushed or expired
+                if(it->time <= flushTime &&
+                   (it->exptime == 0 || it->exptime >= current_time)) {
+                    if((*cbFn)(it, bkt, magic) == -1 ||
+                       ++sampled == n) {
+                        walking = 0;
+                    }
+                }
+            }
+            if(bkt == stopBkt) break;
+            if(bkt == maxBkt) bkt = 0;
+            else bkt++;
+            
+        }
+    }
+    pthread_mutex_unlock(&cache_lock);
+    return sampled;
+}
+#endif
+            
+
 item *assoc_find(const char *key, const size_t nkey) {
     uint32_t hv = hash(key, nkey, 0);
     item *it;

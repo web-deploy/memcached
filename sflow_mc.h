@@ -47,7 +47,7 @@ void sflow_sample(SFLMemcache_cmd cmd, struct conn *c, const void *key, size_t k
 #define SFLOW_SAMPLE_TEST(c)
 #define SFLOW_SAMPLE(cmd, c, key, keylen, nkeys, bytes, slab_op)
 
-#endif
+#endif /* ENABLE_SFLOW */
 
 #endif /* SFLOW_MC_H */
 

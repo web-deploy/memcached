@@ -188,6 +188,11 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
     mcElem.counterBlock.memcache.listen_disabled_num = stats.listen_disabled_num;
     mcElem.counterBlock.memcache.threads = settings.num_threads;
     mcElem.counterBlock.memcache.conn_yields = thread_stats.conn_yields;
+    mcElem.counterBlock.memcache.bytes = stats.curr_bytes;
+    mcElem.counterBlock.memcache.curr_items = stats.curr_items;
+    mcElem.counterBlock.memcache.total_items = stats.total_items;
+    mcElem.counterBlock.memcache.evictions = stats.evictions;
+    // mcElem.counterBlock.memcache.reclaimed = stats.reclaimed;
     STATS_UNLOCK();
     SFLADD_ELEMENT(cs, &mcElem);
     sfl_poller_writeCountersSample(poller, cs);
@@ -389,14 +394,27 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
             
         /* ask the fd for the local socket - may have wildcards, but
            at least we may learn the local port */
-        getsockname(c->sfd, (struct sockaddr *)&localsoc, &localsoclen);
-        /* for tcp the socket can tell us the peer info */
+        if(getsockname(c->sfd, (struct sockaddr *)&localsoc, &localsoclen) == -1) {
+            if(settings.verbose > 0) {
+                perror("sflow_sample() : getsockname() failed");
+                memset(&localsoc, 0, sizeof(localsoc));
+                localsoclen = 0;
+            }
+        }
+
+        /* for tcp the socket can tell us the peer info - provided it's still open */
         if(c->transport == tcp_transport) {
-            getpeername(c->sfd, (struct sockaddr *)&peersoc, &peersoclen);
+            if(getpeername(c->sfd, (struct sockaddr *)&peersoc, &peersoclen) == -1) {
+                if(settings.verbose > 0) {
+                    perror("sflow_sample() : getpeername() failed");
+                }
+                memset(&peersoc, 0, sizeof(peersoc));
+                peersoclen = 0;
+            }
         }
         else {
             /* for UDP the peer can be different for every packet, but
-               this info is capture in the recvfrom() and given to us */
+               this info is captured in the recvfrom() and given to us */
             memcpy(&peersoc, &c->request_addr, c->request_addr_size);
         }
             
@@ -426,7 +444,12 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
             SFLADD_ELEMENT(&fs, &socElem);
         }
         else {
-            perror("sflow_sample() : unexpected socket length or address family");
+            if(settings.verbose > 0) {
+                fprintf(stderr, "sflow_sample() : unexpected socket length (%d) or address family (v4=%d, v6=%d)\n",
+                        peersoclen,
+                        soc4->sin_family,
+                        soc6->sin6_family);
+            }
         }
     }
     SEMLOCK_DO(sm->mutex) {
@@ -480,10 +503,14 @@ static void sfmc_cb_sendPkt(void *magic, SFLAgent *agent, SFLReceiver *receiver,
                                 (struct sockaddr *)&coll->sa,
                                 socklen);
             if(result == -1 && errno != EINTR) {
-                perror("sfmc_cb_sendPkt() : sendTo");
+                if(settings.verbose > 0) {
+                    perror("sfmc_cb_sendPkt() : sendTo");
+                }
             }
             if(result == 0) {
-                perror("sfmc_cb_sendPkt() : sendTo returned 0");
+                if(settings.verbose > 0) {
+                    perror("sfmc_cb_sendPkt() : sendTo returned 0");
+                }
             }
         }
     }
