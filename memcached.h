@@ -435,6 +435,7 @@ struct conn {
     LIBEVENT_THREAD *thread; /* Pointer to the thread object serving this connection */
 #ifdef ENABLE_SFLOW
     struct timeval sflow_start_time;
+    int sflow_op;
 #endif
 };
 

@@ -257,24 +257,24 @@ static SFLMemcache_cmd sflow_map_binary_cmd(int cmd) {
     case PROTOCOL_BINARY_CMD_DECREMENT: sflcmd = SFMC_CMD_DECR; break;
     case PROTOCOL_BINARY_CMD_QUIT: sflcmd = SFMC_CMD_QUIT; break;
     case PROTOCOL_BINARY_CMD_FLUSH: sflcmd = SFMC_CMD_FLUSH; break;
-    case PROTOCOL_BINARY_CMD_GETQ: break;
+    case PROTOCOL_BINARY_CMD_GETQ: sflcmd = SFMC_CMD_GET; break;
     case PROTOCOL_BINARY_CMD_NOOP: break;
     case PROTOCOL_BINARY_CMD_VERSION: sflcmd = SFMC_CMD_VERSION; break;
-    case PROTOCOL_BINARY_CMD_GETK: break;
-    case PROTOCOL_BINARY_CMD_GETKQ: break;
+    case PROTOCOL_BINARY_CMD_GETK: sflcmd = SFMC_CMD_GET; break;
+    case PROTOCOL_BINARY_CMD_GETKQ: sflcmd = SFMC_CMD_GET; break;
     case PROTOCOL_BINARY_CMD_APPEND: sflcmd = SFMC_CMD_APPEND; break;
     case PROTOCOL_BINARY_CMD_PREPEND: sflcmd = SFMC_CMD_PREPEND; break;
     case PROTOCOL_BINARY_CMD_STAT: sflcmd = SFMC_CMD_STATS; break;
-    case PROTOCOL_BINARY_CMD_SETQ: break;
-    case PROTOCOL_BINARY_CMD_ADDQ: break;
-    case PROTOCOL_BINARY_CMD_REPLACEQ: break;
-    case PROTOCOL_BINARY_CMD_DELETEQ: break;
-    case PROTOCOL_BINARY_CMD_INCREMENTQ: break;
-    case PROTOCOL_BINARY_CMD_DECREMENTQ: break;
-    case PROTOCOL_BINARY_CMD_QUITQ: break;
-    case PROTOCOL_BINARY_CMD_FLUSHQ: break;
-    case PROTOCOL_BINARY_CMD_APPENDQ: break;
-    case PROTOCOL_BINARY_CMD_PREPENDQ: break;
+    case PROTOCOL_BINARY_CMD_SETQ: sflcmd = SFMC_CMD_SET; break;
+    case PROTOCOL_BINARY_CMD_ADDQ: sflcmd = SFMC_CMD_ADD; break;
+    case PROTOCOL_BINARY_CMD_REPLACEQ: sflcmd = SFMC_CMD_REPLACE; break;
+    case PROTOCOL_BINARY_CMD_DELETEQ: sflcmd = SFMC_CMD_DELETE; break;
+    case PROTOCOL_BINARY_CMD_INCREMENTQ: sflcmd = SFMC_CMD_INCR; break;
+    case PROTOCOL_BINARY_CMD_DECREMENTQ: sflcmd = SFMC_CMD_DECR; break;
+    case PROTOCOL_BINARY_CMD_QUITQ: sflcmd = SFMC_CMD_QUIT; break;
+    case PROTOCOL_BINARY_CMD_FLUSHQ: sflcmd = SFMC_CMD_FLUSH; break;
+    case PROTOCOL_BINARY_CMD_APPENDQ: sflcmd = SFMC_CMD_APPEND; break;
+    case PROTOCOL_BINARY_CMD_PREPENDQ: sflcmd = SFMC_CMD_PREPEND; break;
         //case PROTOCOL_BINARY_CMD_VERBOSITY: break;
         //case PROTOCOL_BINARY_CMD_TOUCH: break;
         //case PROTOCOL_BINARY_CMD_GAT: break;
@@ -320,6 +320,12 @@ void sflow_sample_test(struct conn *c) {
            that we can really do better than microsecond accuracy
            anyway. */
         gettimeofday(&c->sflow_start_time, NULL);
+        /* try and record the command, but c->cmd may not be set yet
+           particularly for the ascii protocol,  so we have to be
+           prepared to look at this again when we take the sample */
+        c->sflow_op = (c->protocol == binary_prot) ?
+            sflow_map_binary_cmd(c->cmd) :
+            sflow_map_ascii_op(c->cmd);
     }
 }
         
@@ -359,19 +365,33 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
     mcopElem.tag = SFLFLOW_MEMCACHE;
     mcopElem.flowType.memcache.protocol = sflow_map_protocol(c->protocol);
         
-    // sometimes we pass the command in explicitly
-    // otherwise we allow it to be inferred
+    /* sometimes we pass the command in explicitly
+       otherwise we allow it to pick up the
+       op-code that we stashed at sample-test time.
+       However c->cmd may not have been set to anything
+       then,  so we can still have another look at it now.
+       This extra checking was added because of the way
+       that the binary protocol sets c->cmd to the request_op
+       at the beginnging but then changes it later to something
+       like NREAD_SET.  So the most reliable way to know the
+       binary op was to stash it at sample-test time.
+    */
+
     if(command == SFMC_CMD_OTHER) {
-        if(c->protocol == binary_prot) {
-            /* binary protocol has c->cmd */
-            command = sflow_map_binary_cmd(c->cmd);
+        if(c->sflow_op == SFMC_CMD_OTHER) {
+            /* we didn't store the cmd at sample_test time
+               so just use the inferred one here */
+            command = (c->protocol == binary_prot) ?
+                sflow_map_binary_cmd(c->cmd) :
+                sflow_map_ascii_op(c->cmd);
         }
         else {
-            /* ascii protocol - infer cmd from the store_op */
-            /* actually this older version stores it in c->cmd too */
-            command = sflow_map_ascii_op(c->cmd);
+            /* it was stored at sample_test time - (probably
+               this is the binary protcol) */
+            command = c->sflow_op;
         }
     }
+
     mcopElem.flowType.memcache.command = command;
         
     mcopElem.flowType.memcache.key.str = (char *)key;
@@ -416,6 +436,7 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
             /* for UDP the peer can be different for every packet, but
                this info is captured in the recvfrom() and given to us */
             memcpy(&peersoc, &c->request_addr, c->request_addr_size);
+            peersoclen = c->request_addr_size;
         }
             
         /* two possibilities here... */
