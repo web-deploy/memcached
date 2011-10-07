@@ -171,7 +171,10 @@ static rel_time_t realtime(const time_t exptime) {
 static void stats_init(void) {
     stats.curr_items = stats.total_items = stats.curr_conns = stats.total_conns = stats.conn_structs = 0;
     stats.get_cmds = stats.set_cmds = stats.get_hits = stats.get_misses = stats.evictions = stats.reclaimed = 0;
+    stats.touch_cmds = stats.touch_misses = stats.touch_hits = stats.rejected_conns = 0;
     stats.curr_bytes = stats.listen_disabled_num = 0;
+    stats.hash_power_level = stats.hash_bytes = stats.hash_is_expanding = 0;
+    stats.expired_unfetched = stats.evicted_unfetched = 0;
     stats.accepting_conns = true; /* assuming we start in this state. */
 
     /* make the time we started always be 2 seconds before we really
@@ -185,6 +188,7 @@ static void stats_init(void) {
 static void stats_reset(void) {
     STATS_LOCK();
     stats.total_items = stats.total_conns = 0;
+    stats.rejected_conns = 0;
     stats.evictions = 0;
     stats.reclaimed = 0;
     stats.listen_disabled_num = 0;
@@ -217,6 +221,8 @@ static void settings_init(void) {
     settings.backlog = 1024;
     settings.binding_protocol = negotiating_prot;
     settings.item_size_max = 1024 * 1024; /* The famous 1MB upper limit. */
+    settings.maxconns_fast = false;
+    settings.hashpower_init = 0;
 }
 
 /*
@@ -1193,6 +1199,98 @@ static void complete_update_bin(conn *c) {
     c->item = 0;
 }
 
+static void process_bin_touch(conn *c) {
+    item *it;
+
+    protocol_binary_response_get* rsp = (protocol_binary_response_get*)c->wbuf;
+    char* key = binary_get_key(c);
+    size_t nkey = c->binary_header.request.keylen;
+    protocol_binary_request_touch *t = (void *)&c->binary_header;
+    uint32_t exptime = ntohl(t->message.body.expiration);
+
+    if (settings.verbose > 1) {
+        int ii;
+        /* May be GAT/GATQ/etc */
+        fprintf(stderr, "<%d TOUCH ", c->sfd);
+        for (ii = 0; ii < nkey; ++ii) {
+            fprintf(stderr, "%c", key[ii]);
+        }
+        fprintf(stderr, "\n");
+    }
+
+    it = item_touch(key, nkey, realtime(exptime));
+
+    if (it) {
+        /* the length has two unnecessary bytes ("\r\n") */
+        uint16_t keylen = 0;
+        uint32_t bodylen = sizeof(rsp->message.body) + (it->nbytes - 2);
+
+        item_update(it);
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        c->thread->stats.touch_cmds++;
+        c->thread->stats.slab_stats[it->slabs_clsid].touch_hits++;
+        pthread_mutex_unlock(&c->thread->stats.mutex);
+
+        MEMCACHED_COMMAND_TOUCH(c->sfd, ITEM_key(it), it->nkey,
+                                it->nbytes, ITEM_get_cas(it));
+
+        if (c->cmd == PROTOCOL_BINARY_CMD_TOUCH) {
+            bodylen -= it->nbytes - 2;
+        } else if (c->cmd == PROTOCOL_BINARY_CMD_GATK) {
+            bodylen += nkey;
+            keylen = nkey;
+        }
+
+        add_bin_header(c, 0, sizeof(rsp->message.body), keylen, bodylen);
+        rsp->message.header.response.cas = htonll(ITEM_get_cas(it));
+
+        // add the flags
+        rsp->message.body.flags = htonl(strtoul(ITEM_suffix(it), NULL, 10));
+        add_iov(c, &rsp->message.body, sizeof(rsp->message.body));
+
+        if (c->cmd == PROTOCOL_BINARY_CMD_GATK) {
+            add_iov(c, ITEM_key(it), nkey);
+        }
+
+        /* Add the data minus the CRLF */
+        if (c->cmd != PROTOCOL_BINARY_CMD_TOUCH) {
+            add_iov(c, ITEM_data(it), it->nbytes - 2);
+        }
+
+        conn_set_state(c, conn_mwrite);
+        c->write_and_go = conn_new_cmd;
+        /* Remember this command so we can garbage collect it later */
+        c->item = it;
+    } else {
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        c->thread->stats.touch_cmds++;
+        c->thread->stats.touch_misses++;
+        pthread_mutex_unlock(&c->thread->stats.mutex);
+
+        MEMCACHED_COMMAND_TOUCH(c->sfd, key, nkey, -1, 0);
+
+        if (c->noreply) {
+            conn_set_state(c, conn_new_cmd);
+        } else {
+            if (c->cmd == PROTOCOL_BINARY_CMD_GATK) {
+                char *ofs = c->wbuf + sizeof(protocol_binary_response_header);
+                add_bin_header(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT,
+                        0, nkey, nkey);
+                memcpy(ofs, key, nkey);
+                add_iov(c, ofs, nkey);
+                conn_set_state(c, conn_mwrite);
+                c->write_and_go = conn_new_cmd;
+            } else {
+                write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);
+            }
+        }
+    }
+
+    if (settings.detail_enabled) {
+        stats_prefix_record_get(key, nkey, NULL != it);
+    }
+}
+
 static void process_bin_get(conn *c) {
     item *it;
 
@@ -1218,6 +1316,7 @@ static void process_bin_get(conn *c) {
         uint16_t keylen = 0;
         uint32_t bodylen = sizeof(rsp->message.body) + (it->nbytes - 2);
 
+        item_update(it);
         pthread_mutex_lock(&c->thread->stats.mutex);
         c->thread->stats.get_cmds++;
         c->thread->stats.slab_stats[it->slabs_clsid].get_hits++;
@@ -1244,6 +1343,7 @@ static void process_bin_get(conn *c) {
         /* Add the data minus the CRLF */
         add_iov(c, ITEM_data(it), it->nbytes - 2);
         conn_set_state(c, conn_mwrite);
+        c->write_and_go = conn_new_cmd;
         /* Remember this command so we can garbage collect it later */
         c->item = it;
     } else {
@@ -1264,6 +1364,7 @@ static void process_bin_get(conn *c) {
                 memcpy(ofs, key, nkey);
                 add_iov(c, ofs, nkey);
                 conn_set_state(c, conn_mwrite);
+                c->write_and_go = conn_new_cmd;
             } else {
                 write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);
             }
@@ -1757,6 +1858,12 @@ static void dispatch_bin_command(conn *c) {
     case PROTOCOL_BINARY_CMD_GETKQ:
         c->cmd = PROTOCOL_BINARY_CMD_GETK;
         break;
+    case PROTOCOL_BINARY_CMD_GATQ:
+        c->cmd = PROTOCOL_BINARY_CMD_GAT;
+        break;
+    case PROTOCOL_BINARY_CMD_GATKQ:
+        c->cmd = PROTOCOL_BINARY_CMD_GAT;
+        break;
     default:
         c->noreply = false;
     }
@@ -1854,6 +1961,17 @@ static void dispatch_bin_command(conn *c) {
         case PROTOCOL_BINARY_CMD_SASL_STEP:
             if (extlen == 0 && keylen != 0) {
                 bin_read_key(c, bin_reading_sasl_auth, 0);
+            } else {
+                protocol_error = 1;
+            }
+            break;
+        case PROTOCOL_BINARY_CMD_TOUCH:
+        case PROTOCOL_BINARY_CMD_GAT:
+        case PROTOCOL_BINARY_CMD_GATQ:
+        case PROTOCOL_BINARY_CMD_GATK:
+        case PROTOCOL_BINARY_CMD_GATKQ:
+            if (extlen == 4 && keylen != 0) {
+                bin_read_key(c, bin_reading_touch_key, 4);
             } else {
                 protocol_error = 1;
             }
@@ -2089,6 +2207,9 @@ static void complete_nread_binary(conn *c) {
         break;
     case bin_reading_get_key:
         process_bin_get(c);
+        break;
+    case bin_reading_touch_key:
+        process_bin_touch(c);
         break;
     case bin_reading_stat:
         process_bin_stat(c);
@@ -2435,10 +2556,15 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
 
     APPEND_STAT("curr_connections", "%u", stats.curr_conns - 1);
     APPEND_STAT("total_connections", "%u", stats.total_conns);
+    if (settings.maxconns_fast) {
+        APPEND_STAT("rejected_connections", "%llu", (unsigned long long)stats.rejected_conns);
+    }
     APPEND_STAT("connection_structures", "%u", stats.conn_structs);
+    APPEND_STAT("reserved_fds", "%u", stats.reserved_fds);
     APPEND_STAT("cmd_get", "%llu", (unsigned long long)thread_stats.get_cmds);
     APPEND_STAT("cmd_set", "%llu", (unsigned long long)slab_stats.set_cmds);
     APPEND_STAT("cmd_flush", "%llu", (unsigned long long)thread_stats.flush_cmds);
+    APPEND_STAT("cmd_touch", "%llu", (unsigned long long)thread_stats.touch_cmds);
     APPEND_STAT("get_hits", "%llu", (unsigned long long)slab_stats.get_hits);
     APPEND_STAT("get_misses", "%llu", (unsigned long long)thread_stats.get_misses);
     APPEND_STAT("delete_misses", "%llu", (unsigned long long)thread_stats.delete_misses);
@@ -2450,6 +2576,8 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("cas_misses", "%llu", (unsigned long long)thread_stats.cas_misses);
     APPEND_STAT("cas_hits", "%llu", (unsigned long long)slab_stats.cas_hits);
     APPEND_STAT("cas_badval", "%llu", (unsigned long long)slab_stats.cas_badval);
+    APPEND_STAT("touch_hits", "%llu", (unsigned long long)slab_stats.touch_hits);
+    APPEND_STAT("touch_misses", "%llu", (unsigned long long)thread_stats.touch_misses);
     APPEND_STAT("auth_cmds", "%llu", (unsigned long long)thread_stats.auth_cmds);
     APPEND_STAT("auth_errors", "%llu", (unsigned long long)thread_stats.auth_errors);
     APPEND_STAT("bytes_read", "%llu", (unsigned long long)thread_stats.bytes_read);
@@ -2459,6 +2587,11 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("listen_disabled_num", "%llu", (unsigned long long)stats.listen_disabled_num);
     APPEND_STAT("threads", "%d", settings.num_threads);
     APPEND_STAT("conn_yields", "%llu", (unsigned long long)thread_stats.conn_yields);
+    APPEND_STAT("hash_power_level", "%u", stats.hash_power_level);
+    APPEND_STAT("hash_bytes", "%llu", (unsigned long long)stats.hash_bytes);
+    APPEND_STAT("hash_is_expanding", "%u", stats.hash_is_expanding);
+    APPEND_STAT("expired_unfetched", "%llu", stats.expired_unfetched);
+    APPEND_STAT("evicted_unfetched", "%llu", stats.evicted_unfetched);
     STATS_UNLOCK();
 }
 
@@ -2489,6 +2622,8 @@ static void process_stat_settings(ADD_STAT add_stats, void *c) {
                 prot_text(settings.binding_protocol));
     APPEND_STAT("auth_enabled_sasl", "%s", settings.sasl ? "yes" : "no");
     APPEND_STAT("item_size_max", "%d", settings.item_size_max);
+    APPEND_STAT("maxconns_fast", "%s", settings.maxconns_fast ? "yes" : "no");
+    APPEND_STAT("hashpower_init", "%d", settings.hashpower_init);
 }
 
 #ifdef ENABLE_SFLOW
@@ -2910,6 +3045,49 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     conn_set_state(c, conn_nread);
 }
 
+static void process_touch_command(conn *c, token_t *tokens, const size_t ntokens) {
+    char *key;
+    size_t nkey;
+    int32_t exptime_int = 0;
+    item *it;
+
+    assert(c != NULL);
+
+    set_noreply_maybe(c, tokens, ntokens);
+
+    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+
+    key = tokens[KEY_TOKEN].value;
+    nkey = tokens[KEY_TOKEN].length;
+
+    if (!safe_strtol(tokens[2].value, &exptime_int)) {
+        out_string(c, "CLIENT_ERROR invalid exptime argument");
+        return;
+    }
+
+    it = item_touch(key, nkey, realtime(exptime_int));
+    if (it) {
+        item_update(it);
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        c->thread->stats.touch_cmds++;
+        c->thread->stats.slab_stats[it->slabs_clsid].touch_hits++;
+        pthread_mutex_unlock(&c->thread->stats.mutex);
+
+        out_string(c, "TOUCHED");
+        item_remove(it);
+    } else {
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        c->thread->stats.touch_cmds++;
+        c->thread->stats.touch_misses++;
+        pthread_mutex_unlock(&c->thread->stats.mutex);
+
+        out_string(c, "NOT_FOUND");
+    }
+}
+
 static void process_arithmetic_command(conn *c, token_t *tokens, const size_t ntokens, const bool incr) {
     char temp[INCR_MAX_STORAGE_LEN];
     uint64_t delta;
@@ -3027,6 +3205,9 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
         memcpy(ITEM_data(new_it), buf, res);
         memcpy(ITEM_data(new_it) + res, "\r\n", 2);
         item_replace(it, new_it);
+        // Overwrite the older item's CAS with our new CAS since we're
+        // returning the CAS of the old item below.
+        ITEM_set_cas(it, (settings.use_cas) ? ITEM_get_cas(new_it) : 0);
         do_item_remove(new_it);       /* release our reference */
     } else { /* replace in-place */
         /* When changing the value without replacing the item, we
@@ -3035,6 +3216,7 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
 
         memcpy(ITEM_data(it), buf, res);
         memset(ITEM_data(it) + res, ' ', it->nbytes - res - 2);
+        do_item_update(it);
     }
 
     if (cas) {
@@ -3171,6 +3353,10 @@ static void process_command(conn *c, char *command) {
     } else if (ntokens >= 3 && ntokens <= 5 && (strcmp(tokens[COMMAND_TOKEN].value, "delete") == 0)) {
 
         process_delete_command(c, tokens, ntokens);
+
+    } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, "touch") == 0)) {
+
+        process_touch_command(c, tokens, ntokens);
 
     } else if (ntokens >= 2 && (strcmp(tokens[COMMAND_TOKEN].value, "stats") == 0)) {
 
@@ -3591,6 +3777,7 @@ static void drive_machine(conn *c) {
     struct sockaddr_storage addr;
     int nreqs = settings.reqs_per_event;
     int res;
+    const char *str;
 
     assert(c != NULL);
 
@@ -3621,8 +3808,19 @@ static void drive_machine(conn *c) {
                 break;
             }
 
-            dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
+            if (settings.maxconns_fast &&
+                stats.curr_conns + stats.reserved_fds >= settings.maxconns - 1) {
+                str = "ERROR Too many open connections\r\n";
+                res = write(sfd, str, strlen(str));
+                close(sfd);
+                STATS_LOCK();
+                stats.rejected_conns++;
+                STATS_UNLOCK();
+            } else {
+                dispatch_conn_new(sfd, conn_new_cmd, EV_READ | EV_PERSIST,
                                      DATA_BUFFER_SIZE, tcp_transport);
+            }
+
             stop = true;
             break;
 
@@ -4002,6 +4200,11 @@ static int server_socket(const char *interface,
             /* getaddrinfo can return "junk" addresses,
              * we make sure at least one works before erroring.
              */
+            if (errno == EMFILE) {
+                /* ...unless we're out of fds */
+                perror("server_socket");
+                exit(EX_OSERR);
+            }
             continue;
         }
 
@@ -4328,6 +4531,14 @@ static void usage(void) {
 #ifdef ENABLE_SASL
     printf("-S            Turn on Sasl authentication\n");
 #endif
+    printf("-o            Comma separated list of extended or experimental options\n"
+           "              - (EXPERIMENTAL) maxconns_fast: immediately close new\n"
+           "                connections if over maxconns limit\n"
+           "              - hashpower: An integer multiplier for how large the hash\n"
+           "                table should be. Can be grown at runtime if not big enough.\n"
+           "                Set this based on \"STAT hash_power_level\" before a \n"
+           "                restart.\n"
+           );
     return;
 }
 
@@ -4541,6 +4752,18 @@ int main (int argc, char **argv) {
     bool tcp_specified = false;
     bool udp_specified = false;
 
+    char *subopts;
+    char *subopts_value;
+    enum {
+        MAXCONNS_FAST = 0,
+        HASHPOWER_INIT
+    };
+    char *const subopts_tokens[] = {
+        [MAXCONNS_FAST] = "maxconns_fast",
+        [HASHPOWER_INIT] = "hashpower",
+        NULL
+    };
+
     if (!sanitycheck()) {
         return EX_OSERR;
     }
@@ -4582,6 +4805,7 @@ int main (int argc, char **argv) {
           "B:"  /* Binding protocol */
           "I:"  /* Max item size */
           "S"   /* Sasl ON */
+          "o:"  /* Extended generic options */
         ))) {
         switch (c) {
         case 'a':
@@ -4756,6 +4980,39 @@ int main (int argc, char **argv) {
 #endif
             settings.sasl = true;
             break;
+        case 'o': /* It's sub-opts time! */
+            subopts = optarg;
+
+            while (*subopts != '\0') {
+
+            switch (getsubopt(&subopts, subopts_tokens, &subopts_value)) {
+            case MAXCONNS_FAST:
+                settings.maxconns_fast = true;
+                break;
+            case HASHPOWER_INIT:
+                if (subopts_value == NULL) {
+                    fprintf(stderr, "Missing numeric argument for hashpower\n");
+                    return 1;
+                }
+                settings.hashpower_init = atoi(subopts_value);
+                if (settings.hashpower_init < 12) {
+                    fprintf(stderr, "Initial hashtable multiplier of %d is too low\n",
+                        settings.hashpower_init);
+                    return 1;
+                } else if (settings.hashpower_init > 64) {
+                    fprintf(stderr, "Initial hashtable multiplier of %d is too high\n"
+                        "Choose a value based on \"STAT hash_power_level\" from a running instance\n",
+                        settings.hashpower_init);
+                    return 1;
+                }
+                break;
+            default:
+                printf("Illegal suboption \"%s\"\n", subopts_value);
+                return 1;
+            }
+
+            }
+            break;
         default:
             fprintf(stderr, "Illegal argument \"%c\"\n", c);
             return 1;
@@ -4824,13 +5081,9 @@ int main (int argc, char **argv) {
         fprintf(stderr, "failed to getrlimit number of files\n");
         exit(EX_OSERR);
     } else {
-        int maxfiles = settings.maxconns;
-        if (rlim.rlim_cur < maxfiles)
-            rlim.rlim_cur = maxfiles;
-        if (rlim.rlim_max < rlim.rlim_cur)
-            rlim.rlim_max = rlim.rlim_cur;
+        rlim.rlim_cur = settings.maxconns;
         if (setrlimit(RLIMIT_NOFILE, &rlim) != 0) {
-            fprintf(stderr, "failed to set rlimit for open files. Try running as root or requesting smaller maxconns value.\n");
+            fprintf(stderr, "failed to set rlimit for open files. Try starting as root or requesting smaller maxconns value.\n");
             exit(EX_OSERR);
         }
     }
@@ -4886,7 +5139,7 @@ int main (int argc, char **argv) {
 
     /* initialize other stuff */
     stats_init();
-    assoc_init();
+    assoc_init(settings.hashpower_init);
     conn_init();
     slabs_init(settings.maxbytes, settings.factor, preallocate);
 
@@ -4961,6 +5214,15 @@ int main (int argc, char **argv) {
             fclose(portnumber_file);
             rename(temp_portnumber_filename, portnumber_filename);
         }
+    }
+
+    /* Give the sockets a moment to open. I know this is dumb, but the error
+     * is only an advisory.
+     */
+    usleep(1000);
+    if (stats.curr_conns + stats.reserved_fds >= settings.maxconns - 1) {
+        fprintf(stderr, "Maxconns setting is too low, use -c to increase.\n");
+        exit(EXIT_FAILURE);
     }
 
     if (pid_file != NULL) {
