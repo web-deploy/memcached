@@ -357,6 +357,7 @@ typedef struct {
 
 #ifdef ENABLE_SFLOW
 uint32_t sflow_sample_pool_aggregate(void); // in thread.c
+void sflow_random_seed(uint32_t seed); // in thread.c
 #endif
 
 typedef struct {

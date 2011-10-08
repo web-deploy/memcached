@@ -40,7 +40,7 @@ static void sflFree(SFLAgent *agent, void *obj)
     if(agent->freeFn) (*agent->freeFn)(agent->magic, agent, obj);
     else SFL_FREE(obj);
 }
-  
+
 /*_________________---------------------------__________________
   _________________       error logging       __________________
   -----------------___________________________------------------
@@ -95,7 +95,7 @@ void sfl_agent_init(SFLAgent *agent,
 
 void sfl_agent_release(SFLAgent *agent)
 {
- 
+
     SFLSampler *sm;
     SFLPoller *pl;
     SFLReceiver *rcv;
@@ -154,7 +154,7 @@ SFLReceiver *sfl_agent_addReceiver(SFLAgent *agent)
     rcv = (SFLReceiver *)sflAlloc(agent, sizeof(SFLReceiver));
     sfl_receiver_init(rcv, agent);
     /* add to end of list - to preserve the receiver index numbers for existing receivers */
- 
+
     for(r = agent->receivers; r != NULL; prev = r, r = r->nxt);
     if(prev) prev->nxt = rcv;
     else agent->receivers = rcv;
@@ -253,17 +253,17 @@ static void sfl_sampler_init(SFLSampler *sampler, SFLAgent *agent, SFLDataSource
     /* preserve the *nxt pointer too, in case we are resetting this poller and it is
        already part of the agent's linked list (thanks to Matt Woodly for pointing this out) */
     SFLSampler *nxtPtr = sampler->nxt;
-  
+
     /* clear everything */
     memset(sampler, 0, sizeof(*sampler));
-  
+
     /* restore the linked list ptr */
     sampler->nxt = nxtPtr;
-  
+
     /* now copy in the parameters */
     sampler->agent = agent;
     sampler->dsi = dsi;
-  
+
     /* set defaults */
     sfl_sampler_set_sFlowFsPacketSamplingRate(sampler, SFL_DEFAULT_SAMPLING_RATE);
 }
@@ -324,11 +324,11 @@ static uint32_t SFLRandom = 1;
 uint32_t sfl_random(uint32_t lim) {
     SFLRandom = ((SFLRandom * 32719) + 3) % 32749;
     return ((SFLRandom % lim) + 1);
-} 
+}
 
 void sfl_random_init(uint32_t seed) {
     SFLRandom = seed;
-} 
+}
 
 uint32_t sfl_sampler_next_skip(SFLSampler *sampler) {
     return sfl_random((2 * sampler->sFlowFsPacketSamplingRate) - 1);
@@ -359,10 +359,10 @@ static void sfl_poller_init(SFLPoller *poller,
 
     /* clear everything */
     memset(poller, 0, sizeof(*poller));
-  
+
     /* restore the linked list ptr */
     poller->nxt = nxtPtr;
-  
+
     /* now copy in the parameters */
     poller->agent = agent;
     poller->dsi = dsi; /* structure copy */
@@ -494,7 +494,7 @@ static void sfl_receiver_tick(SFLReceiver *receiver, time_t now)
   _________________   receiver write utilities  __________________
   -----------------_____________________________------------------
 */
- 
+
 static void put32(SFLReceiver *receiver, uint32_t val)
 {
     *receiver->sampleCollector.datap++ = val;
@@ -639,7 +639,7 @@ static int sfl_receiver_writeFlowSample(SFLReceiver *receiver, SFL_FLOW_SAMPLE_T
     if((receiver->sampleCollector.pktlen + packedSize) >= receiver->sFlowRcvrMaximumDatagramSize) {
         sendSample(receiver);
     }
-    
+
     receiver->sampleCollector.numSamples++;
 
     putNet32(receiver, SFLFLOW_SAMPLE);
@@ -694,7 +694,7 @@ static int sfl_receiver_writeFlowSample(SFLReceiver *receiver, SFL_FLOW_SAMPLE_T
         receiverError(receiver, errm);
         return -1;
     }
-      
+
     /* update the pktlen */
     receiver->sampleCollector.pktlen = (u_char *)receiver->sampleCollector.datap - (u_char *)receiver->sampleCollector.data;
     return packedSize;
@@ -753,7 +753,7 @@ static int sfl_receiver_writeCountersSample(SFLReceiver *receiver, SFL_COUNTERS_
     /* if the sample pkt is full enough so that this sample might put */
     /* it over the limit, then we should send it now. */
     if((packedSize = computeCountersSampleSize(receiver, cs)) == -1) return -1;
-  
+
     /* check in case this one sample alone is too big for the datagram */
     /* in fact - if it is even half as big then we should ditch it. Very */
     /* important to avoid overruning the packet buffer. */
@@ -761,23 +761,23 @@ static int sfl_receiver_writeCountersSample(SFLReceiver *receiver, SFL_COUNTERS_
         receiverError(receiver, "counters sample too big for datagram");
         return -1;
     }
-  
+
     if((receiver->sampleCollector.pktlen + packedSize) >= receiver->sFlowRcvrMaximumDatagramSize)
         sendSample(receiver);
-  
+
     receiver->sampleCollector.numSamples++;
-  
+
     putNet32(receiver, SFLCOUNTERS_SAMPLE);
     putNet32(receiver, packedSize - 8); /* tag and length not included */
     putNet32(receiver, cs->sequence_number);
     putNet32(receiver, cs->source_id);
     putNet32(receiver, cs->num_elements);
-  
+
     for(elem = cs->elements; elem != NULL; elem = elem->nxt) {
-    
+
         putNet32(receiver, elem->tag);
         putNet32(receiver, elem->length); /* length cached in computeCountersSampleSize() */
-    
+
         switch(elem->tag) {
         case SFLCOUNTERS_MEMCACHE:
             putNet32(receiver, elem->counterBlock.memcache.uptime);
@@ -848,10 +848,10 @@ static int sfl_receiver_writeCountersSample(SFLReceiver *receiver, SFL_COUNTERS_
 */
 
 static void sendSample(SFLReceiver *receiver)
-{  
+{
     /* construct and send out the sample, then reset for the next one... */
     SFLAgent *agent = receiver->agent;
-  
+
     /* go back and fill in the header */
     receiver->sampleCollector.datap = receiver->sampleCollector.data;
     putNet32(receiver, SFLDATAGRAM_VERSION5);
@@ -860,12 +860,12 @@ static void sendSample(SFLReceiver *receiver)
     putNet32(receiver, ++receiver->sampleCollector.packetSeqNo);
     putNet32(receiver,  (uint32_t)((agent->now - agent->bootTime) * 1000));
     putNet32(receiver, receiver->sampleCollector.numSamples);
-  
+
     /* send */
     if(agent->sendFn) (*agent->sendFn)(agent->magic,
                                        agent,
                                        receiver,
-                                       (u_char *)receiver->sampleCollector.data, 
+                                       (u_char *)receiver->sampleCollector.data,
                                        receiver->sampleCollector.pktlen);
 
     /* reset for the next time */

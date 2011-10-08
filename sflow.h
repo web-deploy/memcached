@@ -63,7 +63,7 @@ typedef struct _SFLExtended_socket_ipv4 {
   uint32_t remote_port;  /* TCP/UDP remote port number of equivalent */
 } SFLExtended_socket_ipv4;
 
-#define XDRSIZ_SFLEXTENDED_SOCKET4 20 
+#define XDRSIZ_SFLEXTENDED_SOCKET4 20
 
 /* IPv6 Socket */
 /* opaque = flow_data; enterprise = 0; format = 2101 */
@@ -119,7 +119,7 @@ typedef struct _SFLSampled_memcache {
   uint32_t protocol;    /* SFLMemcache_prot */
   uint32_t command;     /* SFLMemcache_cmd */
   SFLString key;        /* up to 255 chars */
-  uint32_t nkeys;    
+  uint32_t nkeys;
   uint32_t value_bytes;
   uint32_t duration_uS;
   uint32_t status;      /* SFLMemcache_operation_status */
@@ -152,38 +152,38 @@ enum SFL_sample_tag {
   SFLFLOW_SAMPLE_EXPANDED = 3,     /* enterprise = 0 : format = 3 */
   SFLCOUNTERS_SAMPLE_EXPANDED = 4  /* enterprise = 0 : format = 4 */
 };
-  
+
 /* Format of a single flow sample */
 
 typedef struct _SFLFlow_sample {
   /* uint32_t tag;    */         /* SFL_sample_tag -- enterprise = 0 : format = 1 */
   /* uint32_t length; */
   uint32_t sequence_number;      /* Incremented with each flow sample
-				    generated */
+                    generated */
   uint32_t source_id;            /* fsSourceId */
   uint32_t sampling_rate;        /* fsPacketSamplingRate */
   uint32_t sample_pool;          /* Total number of packets that could have been
-				    sampled (i.e. packets skipped by sampling
-				    process + total number of samples) */
+                    sampled (i.e. packets skipped by sampling
+                    process + total number of samples) */
   uint32_t drops;                /* Number of times a packet was dropped due to
-				    lack of resources */
+                    lack of resources */
   uint32_t input;                /* SNMP ifIndex of input interface.
-				    0 if interface is not known. */
+                    0 if interface is not known. */
   uint32_t output;               /* SNMP ifIndex of output interface,
-				    0 if interface is not known.
-				    Set most significant bit to indicate
-				    multiple destination interfaces
-				    (i.e. in case of broadcast or multicast)
-				    and set lower order bits to indicate
-				    number of destination interfaces.
-				    Examples:
-				    0x00000002  indicates ifIndex = 2
-				    0x00000000  ifIndex unknown.
-				    0x80000007  indicates a packet sent
-				    to 7 interfaces.
-				    0x80000000  indicates a packet sent to
-				    an unknown number of
-				    interfaces greater than 1.*/
+                    0 if interface is not known.
+                    Set most significant bit to indicate
+                    multiple destination interfaces
+                    (i.e. in case of broadcast or multicast)
+                    and set lower order bits to indicate
+                    number of destination interfaces.
+                    Examples:
+                    0x00000002  indicates ifIndex = 2
+                    0x00000000  ifIndex unknown.
+                    0x80000007  indicates a packet sent
+                    to 7 interfaces.
+                    0x80000000  indicates a packet sent to
+                    an unknown number of
+                    interfaces greater than 1.*/
   uint32_t num_elements;
   SFLFlow_sample_element *elements;
 } SFLFlow_sample;
@@ -194,21 +194,21 @@ typedef struct _SFLFlow_sample_expanded {
   /* uint32_t tag;    */         /* SFL_sample_tag -- enterprise = 0 : format = 1 */
   /* uint32_t length; */
   uint32_t sequence_number;      /* Incremented with each flow sample
-				    generated */
+                    generated */
   uint32_t ds_class;             /* EXPANDED */
   uint32_t ds_index;             /* EXPANDED */
   uint32_t sampling_rate;        /* fsPacketSamplingRate */
   uint32_t sample_pool;          /* Total number of packets that could have been
-				    sampled (i.e. packets skipped by sampling
-				    process + total number of samples) */
+                    sampled (i.e. packets skipped by sampling
+                    process + total number of samples) */
   uint32_t drops;                /* Number of times a packet was dropped due to
-				    lack of resources */
+                    lack of resources */
   uint32_t inputFormat;          /* EXPANDED */
   uint32_t input;                /* SNMP ifIndex of input interface.
-				    0 if interface is not known. */
+                    0 if interface is not known. */
   uint32_t outputFormat;         /* EXPANDED */
   uint32_t output;               /* SNMP ifIndex of output interface,
-				    0 if interface is not known. */
+                    0 if interface is not known. */
   uint32_t num_elements;
   SFLFlow_sample_element *elements;
 } SFLFlow_sample_expanded;
@@ -223,16 +223,16 @@ typedef struct _SFLMemcache_counters {
   uint32_t rusage_system;  /* Accumulated system time for this process (ms)*/
   uint32_t curr_connections; /* Number of open connections */
   uint32_t total_connections; /* Total number of connections opened since
-				 the server started running */
+                 the server started running */
   uint32_t connection_structures; /* Number of connection structures
-				     allocated by the server */
+                     allocated by the server */
   uint32_t cmd_get;        /* Cumulative number of retrieval requests */
   uint32_t cmd_set;        /* Cumulative number of storage requests */
   uint32_t cmd_flush;      /* */
   uint32_t get_hits;       /* Number of keys that have been requested and
-			      found present */
+                  found present */
   uint32_t get_misses;     /* Number of items that have been requested
-			      and not found */
+                  and not found */
   uint32_t delete_misses;
   uint32_t delete_hits;
   uint32_t incr_misses;
@@ -281,7 +281,7 @@ typedef struct _SFLCounters_sample {
   /* uint32_t tag;    */       /* SFL_sample_tag -- enterprise = 0 : format = 2 */
   /* uint32_t length; */
   uint32_t sequence_number;    /* Incremented with each counters sample
-				  generated by this source_id */
+                  generated by this source_id */
   uint32_t source_id;          /* fsSourceId */
   uint32_t num_elements;
   SFLCounters_sample_element *elements;
@@ -292,7 +292,7 @@ typedef struct _SFLCounters_sample_expanded {
   /* uint32_t tag;    */       /* SFL_sample_tag -- enterprise = 0 : format = 2 */
   /* uint32_t length; */
   uint32_t sequence_number;    /* Incremented with each counters sample
-				  generated by this source_id */
+                  generated by this source_id */
   uint32_t ds_class;           /* EXPANDED */
   uint32_t ds_index;           /* EXPANDED */
   uint32_t num_elements;
@@ -313,13 +313,13 @@ typedef struct _SFLSample_datagram_hdr {
   uint32_t datagram_version;      /* (enum SFLDatagram_version) = VERSION5 = 5 */
   SFLAddress agent_address;        /* IP address of sampling agent */
   uint32_t sub_agent_id;          /* Used to distinguishing between datagram
-				     streams from separate agent sub entities
-				     within an device. */
+                     streams from separate agent sub entities
+                     within an device. */
   uint32_t sequence_number;       /* Incremented with each sample datagram
-				     generated */
+                     generated */
   uint32_t uptime;                /* Current time (in milliseconds since device
-				     last booted). Should be set as close to
-				     datagram transmission time as possible.*/
+                     last booted). Should be set as close to
+                     datagram transmission time as possible.*/
   uint32_t num_records;           /* Number of tag-len-val flow/counter records to follow */
 } SFLSample_datagram_hdr;
 

@@ -26,7 +26,7 @@
 #include "sflow_mc.h"
 
 #include "sflow_api.h"
-#define SFMC_VERSION "0.91"
+
 #define SFMC_DEFAULT_CONFIGFILE "/etc/hsflowd.auto"
 #define SFMC_SEPARATORS " \t\r\n="
 /* SFMC_MAX LINE LEN must be enough to hold the whole list of targets */
@@ -70,17 +70,17 @@ typedef struct _SFMC {
     int socket6;
 } SFMC;
 
-#define SFMC_ATOMIC_FETCH_ADD(_c, _inc) __sync_fetch_and_add(&(_c), (_inc))
-#define SFMC_ATOMIC_INC(_c) SFMC_ATOMIC_FETCH_ADD((_c), 1)
-#define SFMC_ATOMIC_DEC(_c) SFMC_ATOMIC_FETCH_ADD((_c), -1)
-
 #define SFLOW_DURATION_UNKNOWN 0
 
 /* file-scoped globals */
 static SFMC sfmc;
 
-static void sflow_init(SFMC *sm);
-  
+#define SFMC_LOCK() pthread_mutex_lock(sfmc.mutex)
+#define SFMC_UNLOCK() pthread_mutex_unlock(sfmc.mutex)
+
+static void sflow_tick(rel_time_t current_time);
+static void sfmc_init_config(SFMC *sm);
+
 static void *sfmc_calloc(size_t bytes)
 {
     void *mem = calloc(1, bytes);
@@ -90,25 +90,6 @@ static void *sfmc_calloc(size_t bytes)
     }
     return mem;
 }
-
-static  bool lockOrDie(pthread_mutex_t *sem) {
-    if(sem && pthread_mutex_lock(sem) != 0) {
-        perror("lockOrDie");
-        exit(EXIT_FAILURE);
-    }
-    return true;
-}
-
-static bool releaseOrDie(pthread_mutex_t *sem) {
-    if(sem && pthread_mutex_unlock(sem) != 0) {
-        perror("releaseOrDie");
-        exit(EXIT_FAILURE);
-    }
-    return true;
-}
-
-#define DYNAMIC_LOCAL(VAR) VAR
-#define SEMLOCK_DO(_sem) for(int DYNAMIC_LOCAL(_ctrl)=1; DYNAMIC_LOCAL(_ctrl) && lockOrDie(_sem); DYNAMIC_LOCAL(_ctrl)=0, releaseOrDie(_sem))
 
 static void *sfmc_cb_alloc(void *magic, SFLAgent *agent, size_t bytes)
 {
@@ -129,7 +110,7 @@ static void sfmc_cb_error(void *magic, SFLAgent *agent, char *msg)
 static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE_TYPE *cs)
 {
     SFMC *sm = (SFMC *)poller->magic;
-        
+
     if(sm->config == NULL ||
        sm->config->polling_secs == 0) {
         /* not configured */
@@ -137,23 +118,23 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
     }
 
     // sm->mutex should already be acquired here (when we generate the tick)
-    
+
     SFLCounters_sample_element mcElem = { 0 };
     mcElem.tag = SFLCOUNTERS_MEMCACHE;
-        
+
     struct thread_stats thread_stats;
     threadlocal_stats_aggregate(&thread_stats);
     struct slab_stats slab_stats;
     slab_stats_aggregate(&thread_stats, &slab_stats);
-        
+
 #ifndef WIN32
     struct rusage usage;
     getrusage(RUSAGE_SELF, &usage);
 #endif /* !WIN32 */
-        
+
     STATS_LOCK();
     mcElem.counterBlock.memcache.uptime = sm->tick;
-        
+
 #ifdef WIN32
     mcElem.counterBlock.memcache.rusage_user = 0xFFFFFFFF;
     mcElem.counterBlock.memcache.rusage_system = 0xFFFFFFFF;
@@ -161,7 +142,7 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
     mcElem.counterBlock.memcache.rusage_user = (usage.ru_utime.tv_sec * 1000) + (usage.ru_utime.tv_usec / 1000);
     mcElem.counterBlock.memcache.rusage_system = (usage.ru_stime.tv_sec * 1000) + (usage.ru_stime.tv_usec / 1000);
 #endif /* WIN32 */
-        
+
     mcElem.counterBlock.memcache.curr_connections = stats.curr_conns - 1;
     mcElem.counterBlock.memcache.total_connections = stats.total_conns;
     mcElem.counterBlock.memcache.connection_structures = stats.conn_structs;
@@ -210,6 +191,7 @@ static SFLMemcache_prot sflow_map_protocol(enum protocol prot) {
 }
 
 static SFLMemcache_operation_status sflow_map_status(int ret) {
+    /* need to turm "EXISTS" into "SFMC_OP_DELETED" if the command was "DELETE" $$$ */
     SFLMemcache_operation_status sflret = SFMC_OP_UNKNOWN;
     switch(ret) {
     case STORED: sflret = SFMC_OP_STORED; break;
@@ -294,22 +276,26 @@ static SFLMemcache_cmd sflow_map_binary_cmd(int cmd) {
  * is currently also used for sFlow sampling in the Open vSwitch project
  * at http://www.openvswitch.org.
  */
+
 void sflow_sample_test(struct conn *c) {
-    if(unlikely(!sfmc.sflow_random_seed)) {
-        /* sampling not configured */
-        return;
+
+    if(unlikely(sfmc.tick != current_time)) {
+        /* generate ticks here now - rather than from ISR */
+        sfmc.tick = current_time;
+        sflow_tick(current_time);
     }
+
     c->thread->sflow_sample_pool++;
-    uint32_t seed = c->thread->sflow_random;
-    if(unlikely(seed == 0)) {
-        /* initialize random number generation */
-        seed = sfmc.sflow_random_seed ^ c->thread->thread_id;
-    }
-    seed ^= seed << 13;
-    seed ^= seed >> 17;
-    seed ^= seed << 5;
-    c->thread->sflow_random = seed;
-    if(unlikely(seed <= sfmc.sflow_random_threshold)) {
+    c->thread->sflow_random ^= c->thread->sflow_random << 13;
+    c->thread->sflow_random ^= c->thread->sflow_random >> 17;
+    c->thread->sflow_random ^= c->thread->sflow_random << 5;
+    if(unlikely(c->thread->sflow_random <= sfmc.sflow_random_threshold)) {
+
+        if(sfmc.config == NULL || sfmc.config->sampling_n == 0) {
+            /* sampling wasn't actually configured yet */
+            return;
+        }
+
         /* Relax. We are out of the critical path now. */
         /* since we are sampling at the start of the transaction
            all we have to do here is record the wall-clock time.
@@ -328,19 +314,20 @@ void sflow_sample_test(struct conn *c) {
             sflow_map_ascii_op(c->cmd);
     }
 }
-        
+
 void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size_t keylen, uint32_t nkeys, size_t value_bytes, int status)
 {
     SFMC *sm = &sfmc;
     SFLSampler *sampler = NULL;
-    
+
     // use a semaphore to protect access to the config that might otherwise change under our feet
-    SEMLOCK_DO(sm->mutex) {
-        if(sm->config && sm->config->sampling_n && sm->agent && sm->agent->samplers) {
-            sampler = sm->agent->samplers;
-        }
+    SFMC_LOCK();
+    if(sm->config && sm->config->sampling_n && sm->agent && sm->agent->samplers) {
+        sampler = sm->agent->samplers;
     }
-    
+    SFMC_UNLOCK();
+
+
     if(sampler == NULL) {
         // not configured yet
         return;
@@ -350,21 +337,21 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
     gettimeofday(&timenow, NULL);
     timersub(&timenow, &c->sflow_start_time, &elapsed);
     timerclear(&c->sflow_start_time);
-        
+
     SFL_FLOW_SAMPLE_TYPE fs = { 0 };
-        
+
     /* have to add up the pool from all the threads */
     fs.sample_pool = sflow_sample_pool_aggregate();
-        
+
     /* indicate that I am the server by setting the
        destination interface to 0x3FFFFFFF=="internal"
        and leaving the source interface as 0=="unknown" */
     fs.output = 0x3FFFFFFF;
-        
+
     SFLFlow_sample_element mcopElem = { 0 };
     mcopElem.tag = SFLFLOW_MEMCACHE;
     mcopElem.flowType.memcache.protocol = sflow_map_protocol(c->protocol);
-        
+
     /* sometimes we pass the command in explicitly
        otherwise we allow it to pick up the
        op-code that we stashed at sample-test time.
@@ -393,7 +380,7 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
     }
 
     mcopElem.flowType.memcache.command = command;
-        
+
     mcopElem.flowType.memcache.key.str = (char *)key;
     mcopElem.flowType.memcache.key.len = (key ? keylen : 0);
     mcopElem.flowType.memcache.nkeys = (nkeys == 0) ? 1 : nkeys;
@@ -401,9 +388,9 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
     mcopElem.flowType.memcache.duration_uS = (elapsed.tv_sec * 1000000) + elapsed.tv_usec;
     mcopElem.flowType.memcache.status = sflow_map_status(status);
     SFLADD_ELEMENT(&fs, &mcopElem);
-        
+
     SFLFlow_sample_element socElem = { 0 };
-        
+
     if(c->transport == tcp_transport ||
        c->transport == udp_transport) {
         /* add a socket structure */
@@ -411,7 +398,7 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
         socklen_t localsoclen = sizeof(localsoc);
         struct sockaddr_storage peersoc;
         socklen_t peersoclen = sizeof(peersoc);
-            
+
         /* ask the fd for the local socket - may have wildcards, but
            at least we may learn the local port */
         if(getsockname(c->sfd, (struct sockaddr *)&localsoc, &localsoclen) == -1) {
@@ -438,11 +425,11 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
             memcpy(&peersoc, &c->request_addr, c->request_addr_size);
             peersoclen = c->request_addr_size;
         }
-            
+
         /* two possibilities here... */
         struct sockaddr_in *soc4 = (struct sockaddr_in *)&peersoc;
         struct sockaddr_in6 *soc6 = (struct sockaddr_in6 *)&peersoc;
-            
+
         if(peersoclen == sizeof(*soc4) && soc4->sin_family == AF_INET) {
             struct sockaddr_in *lsoc4 = (struct sockaddr_in *)&localsoc;
             socElem.tag = SFLFLOW_EX_SOCKET4;
@@ -473,9 +460,9 @@ void sflow_sample(SFLMemcache_cmd command, struct conn *c, const void *key, size
             }
         }
     }
-    SEMLOCK_DO(sm->mutex) {
-        sfl_sampler_writeFlowSample(sampler, &fs);
-    }
+    SFMC_LOCK();
+    sfl_sampler_writeFlowSample(sampler, &fs);
+    SFMC_UNLOCK();
 }
 
 
@@ -484,7 +471,7 @@ static void sfmc_cb_sendPkt(void *magic, SFLAgent *agent, SFLReceiver *receiver,
     SFMC *sm = (SFMC *)magic;
     size_t socklen = 0;
     int fd = 0;
-    
+
     if(sm->config == NULL) {
         /* config is disabled */
         return;
@@ -515,7 +502,7 @@ static void sfmc_cb_sendPkt(void *magic, SFLAgent *agent, SFLReceiver *receiver,
             }
             break;
         }
-        
+
         if(socklen && fd > 0) {
             int result = sendto(fd,
                                 pkt,
@@ -553,9 +540,9 @@ static bool sfmc_lookupAddress(char *name, struct sockaddr *sa, SFLAddress *addr
         }
         return false;
     }
-    
+
     if(info == NULL) return false;
-    
+
     if(info->ai_addr) {
         /* answer is now in info - a linked list of answers with sockaddr values. */
         /* extract the address we want from the first one. */
@@ -599,7 +586,7 @@ static bool sfmc_syntaxOK(SFMCConfig *cfg, uint32_t line, uint32_t tokc, uint32_
 static void sfmc_syntaxError(SFMCConfig *cfg, uint32_t line, char *msg) {
     cfg->error = true;
     fprintf(stderr, "sFlow syntax error:%s (on line %u)\n", msg, line);
-}    
+}
 
 static SFMCConfig *sfmc_readConfig(SFMC *sm)
 {
@@ -665,11 +652,11 @@ static SFMCConfig *sfmc_readConfig(SFMC *sm)
                     && sfmc_syntaxOK(config, lineNo, tokc, 2, 2, "sampling.memcache=<int>")) {
                 config->sampling_n = strtol(tokv[1], NULL, 0);
             }
-            else if(strcasecmp(tokv[0], "polling") == 0 
+            else if(strcasecmp(tokv[0], "polling") == 0
                     && sfmc_syntaxOK(config, lineNo, tokc, 2, 2, "polling=<int>")) {
                 config->polling_secs = strtol(tokv[1], NULL, 0);
             }
-            else if(strcasecmp(tokv[0], "polling.memcache") == 0 
+            else if(strcasecmp(tokv[0], "polling.memcache") == 0
                     && sfmc_syntaxOK(config, lineNo, tokc, 2, 2, "polling.memcache=<int>")) {
                 config->polling_secs = strtol(tokv[1], NULL, 0);
             }
@@ -709,13 +696,13 @@ static SFMCConfig *sfmc_readConfig(SFMC *sm)
         }
     }
     fclose(cfg);
-    
+
     /* sanity checks... */
-    
+
     if(config->agentIP.type == SFLADDRESSTYPE_UNDEFINED) {
         sfmc_syntaxError(config, 0, "agentIP=<IP address>|<IPv6 address>");
     }
-    
+
     if((rev_start == rev_end) && !config->error) {
         return config;
     }
@@ -725,142 +712,157 @@ static SFMCConfig *sfmc_readConfig(SFMC *sm)
     }
 }
 
-static void sfmc_apply_config(SFMC *sm, SFMCConfig *config)
-{
-    if(sm->config == config) return;
-    SFMCConfig *oldConfig = sm->config;
-    SEMLOCK_DO(sm->mutex) {
-        sm->config = config;
-        if(oldConfig) free(oldConfig);
-    }
-    if(config) sflow_init(sm);
-}
-    
-
-// called from memcached.c every second or so
-void sflow_tick(rel_time_t current_time) {
-
-    SFMC *sm = &sfmc;
-    sm->tick = current_time;
-
-    if(sm->configTests == 0) {
-        sflow_init(sm);
+/* return true if new_config should be applied */
+static int sfmc_config_check(SFMC *sm, SFMCConfig **new_config) {
+    struct stat statBuf;
+    sm->configTests++;
+    if(settings.verbose > 1) {
+        fprintf(stderr, "checking for config file change <%s>\n", sm->configFile);
     }
 
-    if(sm->configTests == 0 || (sm->tick % 10 == 0)) {
-        sm->configTests++;
-        if(settings.verbose > 1) {
-            fprintf(stderr, "checking for config file change <%s>\n", sm->configFile);
+    if(stat(sm->configFile, &statBuf) != 0) {
+        /* config file missing => config should be cleared */
+        return true;
+    }
+
+    if(statBuf.st_mtime != sm->configFile_modTime) {
+        /* config file modified */
+        if(settings.verbose) {
+            fprintf(stderr, "sFlow config file changed\n");
         }
-        struct stat statBuf;
-        if(stat(sm->configFile, &statBuf) != 0) {
-            /* config file missing */
-            sfmc_apply_config(sm, NULL);
-        }
-        else if(statBuf.st_mtime != sm->configFile_modTime) {
-            /* config file modified */
-            if(settings.verbose) fprintf(stderr, "sFlow config file changed\n");
-            SFMCConfig *newConfig = sfmc_readConfig(sm);
-            if(newConfig) {
-                /* config OK - apply it */
-                if(settings.verbose) fprintf(stderr, "sFlow config OK\n");
-                sfmc_apply_config(sm, newConfig);
-                sm->configFile_modTime = statBuf.st_mtime;
+        if(((*new_config) = sfmc_readConfig(sm)) != NULL) {
+            /* config OK - remember the mod_time and indicate that
+               it should be applied by returning true */
+            if(settings.verbose) {
+                fprintf(stderr, "sFlow config OK\n");
             }
-            else {
-                /* bad config - ignore it (may be in transition) */
-                fprintf(stderr, "sFlow config failed\n");
+            sm->configFile_modTime = statBuf.st_mtime;
+            return true;
+        }
+        else {
+            /* bad config - ignore it (may be in transition) */
+            if(settings.verbose) {
+                fprintf(stderr, "sFlow config invalid - ignored (may be in transition)\n");
             }
         }
     }
-    
-    if(sm->agent && sm->config) {
-        SEMLOCK_DO(sm->mutex) {
-            sfl_agent_tick(sm->agent, (time_t)sm->tick);
-        }
-    }
+    return false;
 }
 
-static void sflow_init(SFMC *sm) {
-    
-    gettimeofday(&sm->start_time, NULL);
-
-    if(sm->configFile == NULL) {
-        sm->configFile = SFMC_DEFAULT_CONFIGFILE;
-    }
+/* call this when you have the lock and a new config to adopt */
+static void sfmc_init_config(SFMC *sm) {
 
     if(sm->config == NULL) return;
 
+    /* create/re-create the agent */
+    if(sm->agent) {
+        sfl_agent_release(sm->agent);
+        free(sm->agent);
+    }
+    sm->agent = (SFLAgent *)sfmc_calloc(sizeof(SFLAgent));
+
+    /* open the sockets - one for v4 and another for v6 */
+    if(sm->socket4 <= 0) {
+        if((sm->socket4 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+            fprintf(stderr, "sFlow IPv4 send socket open failed : %s\n", strerror(errno));
+    }
+    if(sm->socket6 <= 0) {
+        if((sm->socket6 = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+            fprintf(stderr, "sFlow IPv6 send socket open failed : %s\n", strerror(errno));
+    }
+
+    /* initialize the agent with it's address, bootime, callbacks etc. */
+    sfl_agent_init(sm->agent,
+                   &sm->config->agentIP,
+                   settings.port, /* subAgentId */
+                   sm->tick,
+                   sm->tick,
+                   sm,
+                   sfmc_cb_alloc,
+                   sfmc_cb_free,
+                   sfmc_cb_error,
+                   sfmc_cb_sendPkt);
+
+    /* add a receiver */
+    SFLReceiver *receiver = sfl_agent_addReceiver(sm->agent);
+    /* add a <logicalEntity> datasource to represent this application instance */
+    SFLDataSource_instance dsi;
+    /* ds_class = <logicalEntity>, ds_index = <service port>, ds_instance = 0 */
+    /* set ds_index to the service port */
+    SFL_DS_SET(dsi, SFL_DSCLASS_LOGICAL_ENTITY, settings.port, 0);
+    /* add a poller for the counters */
+    SFLPoller *poller = sfl_agent_addPoller(sm->agent, &dsi, sm, sfmc_cb_counters);
+    sfl_poller_set_sFlowCpInterval(poller, sm->config->polling_secs);
+    poller->myReceiver = receiver;
+    /* add a sampler for the sampled operations */
+    SFLSampler *sampler = sfl_agent_addSampler(sm->agent, &dsi);
+    sfl_sampler_set_sFlowFsPacketSamplingRate(sampler, sm->config->sampling_n);
+    sampler->myReceiver = receiver;
+
+    if(sm->config->sampling_n) {
+        /* seed the random number generator so that there is no
+           synchronization even when a large cluster starts up all
+           at the exact same instant */
+        /* could also read 4 bytes from /dev/urandom to do this */
+        int i;
+        uint32_t hash = sm->start_time.tv_sec ^ sm->start_time.tv_usec;
+        u_char *addr = sm->config->agentIP.address.ip_v6.addr;
+        for(i = 0; i < 16; i += 2) {
+            hash *= 3;
+            hash += ((addr[i] << 8) | addr[i+1]);
+        }
+        sfmc.sflow_random_seed = hash;
+        /* seed the threads */
+        sflow_random_seed(sfmc.sflow_random_seed);
+        sfmc.sflow_random_threshold = (uint32_t)-1 / sm->config->sampling_n;
+    }
+    else {
+        sfmc.sflow_random_seed = 0;
+        sfmc.sflow_random_threshold = 0;
+    }
+}
+
+/* called every second or so - now from one of the work threads
+   (used to be called from the timer ISR,  but that led to
+   synchronization questions) */
+static void sflow_tick(rel_time_t current_time) {
+    SFMC *sm = &sfmc;
+    SFMCConfig *new_config = NULL;
+    int apply_new_config = false;
+
+    if(sm->configTests == 0 || (sm->tick % 10 == 0)) {
+        /* it make take time to read the config file, so
+           do it here before we grab the lock */
+        apply_new_config = sfmc_config_check(sm, &new_config);
+    }
+    SFMC_LOCK();
+    if(apply_new_config) {
+        /* now that we have the lock we can swap in the new config */
+        if(sm->config != new_config) {
+            SFMCConfig *old_config = sm->config;
+            sm->config = new_config;
+            if(old_config) free(old_config);
+            if(new_config) sfmc_init_config(sm);
+        }
+    }
+    if(sm->agent && sm->config) {
+        sfl_agent_tick(sm->agent, sm->tick);
+    }
+    SFMC_UNLOCK();
+}
+
+/* can't wait for first tick to create the mutex because we already
+ * need it at that point.  Hence this sflow_init call.  We could also
+ * use this to pass in command-line parameters if there are any.
+ */
+void sflow_init(void) {
+    SFMC *sm = &sfmc;
     if(sm->mutex == NULL) {
         sm->mutex = (pthread_mutex_t*)sfmc_calloc(sizeof(pthread_mutex_t));
         pthread_mutex_init(sm->mutex, NULL);
     }
-
-    SEMLOCK_DO(sm->mutex) {
-        /* create/re-create the agent */
-        if(sm->agent) {
-            sfl_agent_release(sm->agent);
-            free(sm->agent);
-        }
-        sm->agent = (SFLAgent *)sfmc_calloc(sizeof(SFLAgent));
-        
-        /* open the sockets - one for v4 and another for v6 */
-        if(sm->socket4 <= 0) {
-            if((sm->socket4 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-                fprintf(stderr, "sFlow IPv4 send socket open failed : %s\n", strerror(errno));
-        }
-        if(sm->socket6 <= 0) {
-            if((sm->socket6 = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-                fprintf(stderr, "sFlow IPv6 send socket open failed : %s\n", strerror(errno));
-        }
-        
-        /* initialize the agent with it's address, bootime, callbacks etc. */
-        sfl_agent_init(sm->agent,
-                       &sm->config->agentIP,
-                       settings.port, /* subAgentId */
-                       sm->tick,
-                       sm->tick,
-                       sm,
-                       sfmc_cb_alloc,
-                       sfmc_cb_free,
-                       sfmc_cb_error,
-                       sfmc_cb_sendPkt);
-        
-        /* add a receiver */
-        SFLReceiver *receiver = sfl_agent_addReceiver(sm->agent);
-        /* add a <logicalEntity> datasource to represent this application instance */
-        SFLDataSource_instance dsi;
-        /* ds_class = <logicalEntity>, ds_index = <service port>, ds_instance = 0 */
-        /* set ds_index to the service port */
-        SFL_DS_SET(dsi, SFL_DSCLASS_LOGICAL_ENTITY, settings.port, 0);
-
-        /* add a poller for the counters */
-        SFLPoller *poller = sfl_agent_addPoller(sm->agent, &dsi, sm, sfmc_cb_counters);
-        sfl_poller_set_sFlowCpInterval(poller, sm->config->polling_secs);
-        poller->myReceiver = receiver;
-        
-        /* add a sampler for the sampled operations */
-        SFLSampler *sampler = sfl_agent_addSampler(sm->agent, &dsi);
-        sfl_sampler_set_sFlowFsPacketSamplingRate(sampler, sm->config->sampling_n);
-        sampler->myReceiver = receiver;
-
-        if(sm->config->sampling_n) {
-            /* seed the random number generator so that there is no
-               synchronization even when a large cluster starts up all 
-               at the exact same instant */
-            /* could also read 4 bytes from /dev/urandom to do this */
-            uint32_t hash = sm->start_time.tv_sec ^ sm->start_time.tv_usec;
-            u_char *addr = sm->config->agentIP.address.ip_v6.addr;
-            for(int i = 0; i < 16; i += 2) {
-                hash *= 3;
-                hash += ((addr[i] << 8) | addr[i+1]);
-            }
-            sfmc.sflow_random_seed = hash;
-            sfmc.sflow_random_threshold = (uint32_t)-1 / sm->config->sampling_n;
-        }
-        else {
-            sfmc.sflow_random_seed = 0;
-        }
+    gettimeofday(&sm->start_time, NULL);
+    if(sm->configFile == NULL) {
+        sm->configFile = SFMC_DEFAULT_CONFIGFILE;
     }
 }
-

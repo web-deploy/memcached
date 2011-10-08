@@ -48,7 +48,7 @@
 #include <stddef.h>
 
 /* include sflow_mc.h even if ENABLE_SFLOW is not defined
-   so that the SFLOW_SAMPLE macro can be defined to do 
+   so that the SFLOW_SAMPLE macro can be defined to do
    something or be a no-op */
 #include "sflow_mc.h"
 
@@ -1062,12 +1062,15 @@ static void complete_incr_bin(conn *c) {
                 (long long)req->message.body.initial,
                 req->message.body.expiration);
     }
-    
+
     /* may need to move this down so we can pick up the status. At
-       the moment this is going to look like SFMC_CMD_INCR always
-       succeeds. */
-    SFLOW_SAMPLE(SFMC_CMD_INCR, c, key, nkey, 0, 0, EXISTS);
-    
+       the moment this is going to look like SFMC_CMD_INCR and
+       SFMC_CMD_DECR always succeed.  The return status from the
+       add_delta() call below should be assigned to a variable
+       and then we can check it at the bottom.
+    */
+    SFLOW_SAMPLE(c->cmd == PROTOCOL_BINARY_CMD_INCREMENT ? SFMC_CMD_INCR : SFMC_CMD_DECR, c, key, nkey, 0, 0, EXISTS);
+
     if (c->binary_header.request.cas != 0) {
         cas = c->binary_header.request.cas;
     }
@@ -1144,7 +1147,7 @@ static void complete_update_bin(conn *c) {
     *(ITEM_data(it) + it->nbytes - 1) = '\n';
 
     ret = store_item(it, c->cmd, c);
-    
+
     SFLOW_SAMPLE(SFMC_CMD_OTHER, c, ITEM_key(it), it->nkey, 0, (ret == STORED) ? it->nbytes : 0, ret);
 
 #ifdef ENABLE_DTRACE
@@ -2650,7 +2653,7 @@ static int dumpItem(item *it, int bkt, void *magic) {
     char scr[1024];
     int len;
     long secs_since_set, secs_to_expire;
-    
+
     htwb->n++;
 
     // first the numbers
@@ -2751,7 +2754,7 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
             out_string(c, "CLIENT_ERROR bad command line format");
             return;
         }
-        
+
         if(byteLimit > HTWALK_MAXBYTES) {
             byteLimit = HTWALK_MAXBYTES;
         }
@@ -3268,6 +3271,9 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
     }
 
     it = item_get(key, nkey);
+
+    SFLOW_SAMPLE(SFMC_CMD_DELETE, c, ITEM_key(it), it->nkey, 0, it ? it->nbytes : 0, it ? EXISTS : NOT_FOUND);
+
     if (it) {
         MEMCACHED_COMMAND_DELETE(c->sfd, ITEM_key(it), it->nkey);
 
@@ -4468,8 +4474,6 @@ static void clock_handler(const int fd, const short which, void *arg) {
     event_base_set(main_base, &clockevent);
     evtimer_add(&clockevent, &t);
 
-    SFLOW_TICK(current_time);
-
 #if defined(HAVE_CLOCK_GETTIME) && defined(CLOCK_MONOTONIC)
     if (monotonic) {
         struct timespec ts;
@@ -5151,6 +5155,8 @@ int main (int argc, char **argv) {
     assoc_init(settings.hashpower_init);
     conn_init();
     slabs_init(settings.maxbytes, settings.factor, preallocate);
+
+    SFLOW_INIT();
 
     /*
      * ignore SIGPIPE signals; we can use errno == EPIPE if we

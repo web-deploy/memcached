@@ -28,22 +28,22 @@ typedef enum  {
   SFMC_CMD_QUIT     = 15,
 } SFLMemcache_cmd;
 
-void sflow_tick(rel_time_t now);
+void sflow_init(void);
 void sflow_sample_test(struct conn *c);
 void sflow_sample(SFLMemcache_cmd cmd, struct conn *c, const void *key, size_t keylen, uint32_t nkeys, size_t value_bytes, int status);
 
-#define SFLOW_TICK(now) sflow_tick(now)
+#define SFLOW_INIT() sflow_init()
 #define SFLOW_SAMPLE_TEST(c) sflow_sample_test(c)
-#define SFLOW_SAMPLE(cmd, c, key, keylen, nkeys, bytes, status)		      \
-  do {									      \
-    if(unlikely((c)->sflow_start_time.tv_sec)) {			      \
+#define SFLOW_SAMPLE(cmd, c, key, keylen, nkeys, bytes, status)              \
+  do {                                          \
+    if(unlikely((c)->sflow_start_time.tv_sec)) {                  \
       sflow_sample((cmd), (c), (key), (keylen), (nkeys), (bytes), (status));  \
-    }									      \
+    }                                          \
   } while(0)
 
 #else
 
-#define SFLOW_TICK(now)
+#define SFLOW_INIT()
 #define SFLOW_SAMPLE_TEST(c)
 #define SFLOW_SAMPLE(cmd, c, key, keylen, nkeys, bytes, slab_op)
 

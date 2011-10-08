@@ -628,6 +628,14 @@ uint32_t sflow_sample_pool_aggregate(void) {
     }
     return pool;
 }
+
+void sflow_random_seed(uint32_t seed) {
+    int ii;
+    for (ii = 0; ii < settings.num_threads; ++ii) {
+        threads[ii].sflow_random = seed ^ threads[ii].thread_id;
+    }
+}
+
 #endif
 
 /*

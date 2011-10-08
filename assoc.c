@@ -103,14 +103,14 @@ int htWalk(itemCB *cbFn, int startBkt, int n, void *magic) {
             if(bkt == stopBkt) break;
             if(bkt == maxBkt) bkt = 0;
             else bkt++;
-            
+
         }
     }
     pthread_mutex_unlock(&cache_lock);
     return sampled;
 }
 #endif
-            
+
 item *assoc_find(const char *key, const size_t nkey, const uint32_t hv) {
     item *it;
     unsigned int oldbucket;
