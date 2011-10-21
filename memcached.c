@@ -3272,7 +3272,7 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
 
     it = item_get(key, nkey);
 
-    SFLOW_SAMPLE(SFMC_CMD_DELETE, c, ITEM_key(it), it->nkey, 0, it ? it->nbytes : 0, it ? EXISTS : NOT_FOUND);
+    SFLOW_SAMPLE(SFMC_CMD_DELETE, c, key, nkey, 0, it ? it->nbytes : 0, it ? EXISTS : NOT_FOUND);
 
     if (it) {
         MEMCACHED_COMMAND_DELETE(c->sfd, ITEM_key(it), it->nkey);
