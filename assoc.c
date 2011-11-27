@@ -78,7 +78,7 @@ int htWalk(itemCB *cbFn, int startBkt, int n, void *magic) {
     int stopBkt, bkt, maxBkt, walking, sampled;
     time_t flushTime;
     item *it;
-    pthread_mutex_lock(&cache_lock);
+    mutex_lock(&cache_lock);
     if(expanding) {
         sampled = -1;
     }
@@ -106,7 +106,7 @@ int htWalk(itemCB *cbFn, int startBkt, int n, void *magic) {
 
         }
     }
-    pthread_mutex_unlock(&cache_lock);
+    mutex_unlock(&cache_lock);
     return sampled;
 }
 #endif
