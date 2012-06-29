@@ -780,39 +780,37 @@ static int sfl_receiver_writeCountersSample(SFLReceiver *receiver, SFL_COUNTERS_
 
         switch(elem->tag) {
         case SFLCOUNTERS_MEMCACHE:
-            putNet32(receiver, elem->counterBlock.memcache.uptime);
-            putNet32(receiver, elem->counterBlock.memcache.rusage_user);
-            putNet32(receiver, elem->counterBlock.memcache.rusage_system);
-            putNet32(receiver, elem->counterBlock.memcache.curr_connections);
-            putNet32(receiver, elem->counterBlock.memcache.total_connections);
-            putNet32(receiver, elem->counterBlock.memcache.connection_structures);
-            putNet32(receiver, elem->counterBlock.memcache.cmd_get);
             putNet32(receiver, elem->counterBlock.memcache.cmd_set);
+            putNet32(receiver, elem->counterBlock.memcache.cmd_touch);
             putNet32(receiver, elem->counterBlock.memcache.cmd_flush);
             putNet32(receiver, elem->counterBlock.memcache.get_hits);
             putNet32(receiver, elem->counterBlock.memcache.get_misses);
-            putNet32(receiver, elem->counterBlock.memcache.delete_misses);
             putNet32(receiver, elem->counterBlock.memcache.delete_hits);
-            putNet32(receiver, elem->counterBlock.memcache.incr_misses);
+            putNet32(receiver, elem->counterBlock.memcache.delete_misses);
             putNet32(receiver, elem->counterBlock.memcache.incr_hits);
-            putNet32(receiver, elem->counterBlock.memcache.decr_misses);
+            putNet32(receiver, elem->counterBlock.memcache.incr_misses);
             putNet32(receiver, elem->counterBlock.memcache.decr_hits);
-            putNet32(receiver, elem->counterBlock.memcache.cas_misses);
+            putNet32(receiver, elem->counterBlock.memcache.decr_misses);
             putNet32(receiver, elem->counterBlock.memcache.cas_hits);
+            putNet32(receiver, elem->counterBlock.memcache.cas_misses);
             putNet32(receiver, elem->counterBlock.memcache.cas_badval);
             putNet32(receiver, elem->counterBlock.memcache.auth_cmds);
             putNet32(receiver, elem->counterBlock.memcache.auth_errors);
-            putNet64(receiver, elem->counterBlock.memcache.bytes_read);
-            putNet64(receiver, elem->counterBlock.memcache.bytes_written);
-            putNet32(receiver, elem->counterBlock.memcache.limit_maxbytes);
-            putNet32(receiver, elem->counterBlock.memcache.accepting_conns);
-            putNet32(receiver, elem->counterBlock.memcache.listen_disabled_num);
             putNet32(receiver, elem->counterBlock.memcache.threads);
             putNet32(receiver, elem->counterBlock.memcache.conn_yields);
-            putNet64(receiver, elem->counterBlock.memcache.bytes);
+            putNet32(receiver, elem->counterBlock.memcache.listen_disabled_num);
+            putNet32(receiver, elem->counterBlock.memcache.curr_connections);
+            putNet32(receiver, elem->counterBlock.memcache.rejected_connections);
+            putNet32(receiver, elem->counterBlock.memcache.total_connections);
+            putNet32(receiver, elem->counterBlock.memcache.connection_structures);
+            putNet32(receiver, elem->counterBlock.memcache.evictions);
+            putNet32(receiver, elem->counterBlock.memcache.reclaimed);
             putNet32(receiver, elem->counterBlock.memcache.curr_items);
             putNet32(receiver, elem->counterBlock.memcache.total_items);
-            putNet32(receiver, elem->counterBlock.memcache.evictions);
+            putNet64(receiver, elem->counterBlock.memcache.bytes_read);
+            putNet64(receiver, elem->counterBlock.memcache.bytes_written);
+            putNet64(receiver, elem->counterBlock.memcache.bytes);
+            putNet64(receiver, elem->counterBlock.memcache.limit_maxbytes);
             break;
         default:
             {

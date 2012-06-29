@@ -114,6 +114,7 @@ typedef enum  {
   SFMC_CMD_FLUSH    = 13,
   SFMC_CMD_VERSION  = 14,
   SFMC_CMD_QUIT     = 15,
+  SFMC_CMD_TOUCH    = 16,
 } SFLMemcache_cmd;
 #endif
 
@@ -165,7 +166,6 @@ enum SFL_sample_tag {
   SFLFLOW_SAMPLE = 1,              /* enterprise = 0 : format = 1 */
   SFLCOUNTERS_SAMPLE = 2,          /* enterprise = 0 : format = 2 */
 };
-
 /* Format of a single flow sample */
 
 typedef struct _SFLFlow_sample {
@@ -207,52 +207,46 @@ typedef struct _SFLFlow_sample {
 #define XDRSIZ_SFLHOST_VRT_NIO_COUNTERS 40
 
 typedef struct _SFLMemcache_counters {
-  uint32_t uptime;     /* Number of seconds this server has been running */
-  uint32_t rusage_user;    /* Accumulated user time for this process (ms)*/
-  uint32_t rusage_system;  /* Accumulated system time for this process (ms)*/
-  uint32_t curr_connections; /* Number of open connections */
-  uint32_t total_connections; /* Total number of connections opened since
-                 the server started running */
-  uint32_t connection_structures; /* Number of connection structures
-                     allocated by the server */
-  uint32_t cmd_get;        /* Cumulative number of retrieval requests */
-  uint32_t cmd_set;        /* Cumulative number of storage requests */
-  uint32_t cmd_flush;      /* */
-  uint32_t get_hits;       /* Number of keys that have been requested and
-                  found present */
-  uint32_t get_misses;     /* Number of items that have been requested
-                  and not found */
-  uint32_t delete_misses;
-  uint32_t delete_hits;
-  uint32_t incr_misses;
-  uint32_t incr_hits;
-  uint32_t decr_misses;
-  uint32_t decr_hits;
-  uint32_t cas_misses;
-  uint32_t cas_hits;
-  uint32_t cas_badval;
-  uint32_t auth_cmds;
-  uint32_t auth_errors;
-  uint64_t bytes_read;
-  uint64_t bytes_written;
-  uint32_t limit_maxbytes;
-  uint32_t accepting_conns;
-  uint32_t listen_disabled_num;
-  uint32_t threads;
-  uint32_t conn_yields;
-  uint64_t bytes;
-  uint32_t curr_items;
-  uint32_t total_items;
-  uint32_t evictions;
+    uint32_t cmd_set;
+    uint32_t cmd_touch;
+    uint32_t cmd_flush;
+    uint32_t get_hits;
+    uint32_t get_misses;
+    uint32_t delete_hits;
+    uint32_t delete_misses;
+    uint32_t incr_hits;
+    uint32_t incr_misses;
+    uint32_t decr_hits;
+    uint32_t decr_misses;
+    uint32_t cas_hits;
+    uint32_t cas_misses;
+    uint32_t cas_badval;
+    uint32_t auth_cmds;
+    uint32_t auth_errors;
+    uint32_t threads;
+    uint32_t conn_yields;
+    uint32_t listen_disabled_num;
+    uint32_t curr_connections;
+    uint32_t rejected_connections;
+    uint32_t total_connections;
+    uint32_t connection_structures;
+    uint32_t evictions;
+    uint32_t reclaimed;
+    uint32_t curr_items;
+    uint32_t total_items;
+    uint64_t bytes_read;
+    uint64_t bytes_written;
+    uint64_t bytes;
+    uint64_t limit_maxbytes;
 } SFLMemcache_counters;
 
-#define XDRSIZ_SFLMEMCACHE_COUNTERS (36*4)
+#define XDRSIZ_SFLMEMCACHE_COUNTERS 140
 
 /* Counters data */
 
 enum SFLCounters_type_tag {
   /* enterprise = 0, format = ... */
-  SFLCOUNTERS_MEMCACHE      = 2200, /* memcached counters */
+  SFLCOUNTERS_MEMCACHE      = 2204, /* memcached counters */
 };
 
 typedef union _SFLCounters_type {

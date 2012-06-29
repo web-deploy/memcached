@@ -127,53 +127,38 @@ static void sfmc_cb_counters(void *magic, SFLPoller *poller, SFL_COUNTERS_SAMPLE
     struct slab_stats slab_stats;
     slab_stats_aggregate(&thread_stats, &slab_stats);
 
-#ifndef WIN32
-    struct rusage usage;
-    getrusage(RUSAGE_SELF, &usage);
-#endif /* !WIN32 */
-
     STATS_LOCK();
-    mcElem.counterBlock.memcache.uptime = sm->tick;
-
-#ifdef WIN32
-    mcElem.counterBlock.memcache.rusage_user = 0xFFFFFFFF;
-    mcElem.counterBlock.memcache.rusage_system = 0xFFFFFFFF;
-#else
-    mcElem.counterBlock.memcache.rusage_user = (usage.ru_utime.tv_sec * 1000) + (usage.ru_utime.tv_usec / 1000);
-    mcElem.counterBlock.memcache.rusage_system = (usage.ru_stime.tv_sec * 1000) + (usage.ru_stime.tv_usec / 1000);
-#endif /* WIN32 */
-
-    mcElem.counterBlock.memcache.curr_connections = stats.curr_conns - 1;
-    mcElem.counterBlock.memcache.total_connections = stats.total_conns;
-    mcElem.counterBlock.memcache.connection_structures = stats.conn_structs;
-    mcElem.counterBlock.memcache.cmd_get = thread_stats.get_cmds;
     mcElem.counterBlock.memcache.cmd_set = slab_stats.set_cmds;
+    mcElem.counterBlock.memcache.cmd_touch = thread_stats.touch_cmds;
     mcElem.counterBlock.memcache.cmd_flush = thread_stats.flush_cmds;
     mcElem.counterBlock.memcache.get_hits = slab_stats.get_hits;
     mcElem.counterBlock.memcache.get_misses = thread_stats.get_misses;
-    mcElem.counterBlock.memcache.delete_misses = thread_stats.delete_misses;
     mcElem.counterBlock.memcache.delete_hits = slab_stats.delete_hits;
-    mcElem.counterBlock.memcache.incr_misses = thread_stats.incr_misses;
+    mcElem.counterBlock.memcache.delete_misses = thread_stats.delete_misses;
     mcElem.counterBlock.memcache.incr_hits = slab_stats.incr_hits;
-    mcElem.counterBlock.memcache.decr_misses = thread_stats.decr_misses;
+    mcElem.counterBlock.memcache.incr_misses = thread_stats.incr_misses;
     mcElem.counterBlock.memcache.decr_hits = slab_stats.decr_hits;
-    mcElem.counterBlock.memcache.cas_misses = thread_stats.cas_misses;
+    mcElem.counterBlock.memcache.decr_misses = thread_stats.decr_misses;
     mcElem.counterBlock.memcache.cas_hits = slab_stats.cas_hits;
+    mcElem.counterBlock.memcache.cas_misses = thread_stats.cas_misses;
     mcElem.counterBlock.memcache.cas_badval = slab_stats.cas_badval;
     mcElem.counterBlock.memcache.auth_cmds = thread_stats.auth_cmds;
     mcElem.counterBlock.memcache.auth_errors = thread_stats.auth_errors;
-    mcElem.counterBlock.memcache.bytes_read = thread_stats.bytes_read;
-    mcElem.counterBlock.memcache.bytes_written = thread_stats.bytes_written;
-    mcElem.counterBlock.memcache.limit_maxbytes = settings.maxbytes;
-    mcElem.counterBlock.memcache.accepting_conns = stats.accepting_conns;
-    mcElem.counterBlock.memcache.listen_disabled_num = stats.listen_disabled_num;
     mcElem.counterBlock.memcache.threads = settings.num_threads;
     mcElem.counterBlock.memcache.conn_yields = thread_stats.conn_yields;
-    mcElem.counterBlock.memcache.bytes = stats.curr_bytes;
+    mcElem.counterBlock.memcache.listen_disabled_num = stats.listen_disabled_num;
+    mcElem.counterBlock.memcache.curr_connections = stats.curr_conns;
+    mcElem.counterBlock.memcache.rejected_connections = stats.rejected_conns;
+    mcElem.counterBlock.memcache.total_connections = stats.total_conns;
+    mcElem.counterBlock.memcache.connection_structures = stats.conn_structs;
+    mcElem.counterBlock.memcache.evictions = stats.evictions;
+    mcElem.counterBlock.memcache.reclaimed = stats.reclaimed;
     mcElem.counterBlock.memcache.curr_items = stats.curr_items;
     mcElem.counterBlock.memcache.total_items = stats.total_items;
-    mcElem.counterBlock.memcache.evictions = stats.evictions;
-    // mcElem.counterBlock.memcache.reclaimed = stats.reclaimed;
+    mcElem.counterBlock.memcache.bytes_read = thread_stats.bytes_read;
+    mcElem.counterBlock.memcache.bytes_written = thread_stats.bytes_written;
+    mcElem.counterBlock.memcache.bytes = stats.curr_bytes;
+    mcElem.counterBlock.memcache.limit_maxbytes = settings.maxbytes;
     STATS_UNLOCK();
     SFLADD_ELEMENT(cs, &mcElem);
     sfl_poller_writeCountersSample(poller, cs);

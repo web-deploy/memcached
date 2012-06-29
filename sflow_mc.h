@@ -26,6 +26,7 @@ typedef enum  {
   SFMC_CMD_FLUSH    = 13,
   SFMC_CMD_VERSION  = 14,
   SFMC_CMD_QUIT     = 15,
+  SFMC_CMD_TOUCH    = 16,
 } SFLMemcache_cmd;
 
 void sflow_init(void);
