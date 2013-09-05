@@ -589,7 +589,7 @@ static SFMCConfig *sfmc_readConfig(SFMC *sm)
     }
     char line[SFMC_MAX_LINELEN+1];
     uint32_t lineNo = 0;
-    char *tokv[5];
+    char *tokv[5] = {NULL, NULL, NULL, NULL, NULL};
     uint32_t tokc;
     while(fgets(line, SFMC_MAX_LINELEN, cfg)) {
         lineNo++;
