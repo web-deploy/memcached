@@ -229,7 +229,7 @@ static void settings_init(void) {
     settings.maxconns_fast = false;
     settings.hashpower_init = 0;
     settings.slab_reassign = false;
-    settings.slab_automove = false;
+    settings.slab_automove = 0;
 }
 
 /*
@@ -1215,8 +1215,8 @@ static void process_bin_touch(conn *c) {
     protocol_binary_response_get* rsp = (protocol_binary_response_get*)c->wbuf;
     char* key = binary_get_key(c);
     size_t nkey = c->binary_header.request.keylen;
-    protocol_binary_request_touch *t = (void *)&c->binary_header;
-    uint32_t exptime = ntohl(t->message.body.expiration);
+    protocol_binary_request_touch *t = binary_get_request(c);
+    time_t exptime = ntohl(t->message.body.expiration);
 
     if (settings.verbose > 1) {
         int ii;
@@ -2354,7 +2354,7 @@ enum store_item_type do_store_item(item *it, int comm, conn *c, const uint32_t h
 
                 flags = (int) strtol(ITEM_suffix(old_it), (char **) NULL, 10);
 
-                new_it = item_alloc(key, it->nkey, flags, old_it->exptime, it->nbytes + old_it->nbytes - 2 /* CRLF */);
+                new_it = do_item_alloc(key, it->nkey, flags, old_it->exptime, it->nbytes + old_it->nbytes - 2 /* CRLF */, hv);
 
                 if (new_it == NULL) {
                     /* SERVER_ERROR out of memory */
@@ -2614,8 +2614,6 @@ static void server_stats(ADD_STAT add_stats, conn *c) {
     APPEND_STAT("hash_power_level", "%u", stats.hash_power_level);
     APPEND_STAT("hash_bytes", "%llu", (unsigned long long)stats.hash_bytes);
     APPEND_STAT("hash_is_expanding", "%u", stats.hash_is_expanding);
-    APPEND_STAT("expired_unfetched", "%llu", stats.expired_unfetched);
-    APPEND_STAT("evicted_unfetched", "%llu", stats.evicted_unfetched);
     if (settings.slab_reassign) {
         APPEND_STAT("slab_reassign_running", "%u", stats.slab_reassign_running);
         APPEND_STAT("slabs_moved", "%llu", stats.slabs_moved);
@@ -2653,7 +2651,7 @@ static void process_stat_settings(ADD_STAT add_stats, void *c) {
     APPEND_STAT("maxconns_fast", "%s", settings.maxconns_fast ? "yes" : "no");
     APPEND_STAT("hashpower_init", "%d", settings.hashpower_init);
     APPEND_STAT("slab_reassign", "%s", settings.slab_reassign ? "yes" : "no");
-    APPEND_STAT("slab_automove", "%s", settings.slab_automove ? "yes" : "no");
+    APPEND_STAT("slab_automove", "%d", settings.slab_automove);
 }
 
 #ifdef ENABLE_SFLOW
@@ -3228,7 +3226,7 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
     res = strlen(buf);
     if (res + 2 > it->nbytes || it->refcount != 1) { /* need to realloc */
         item *new_it;
-        new_it = item_alloc(ITEM_key(it), it->nkey, atoi(ITEM_suffix(it) + 1), it->exptime, res + 2 );
+        new_it = do_item_alloc(ITEM_key(it), it->nkey, atoi(ITEM_suffix(it) + 1), it->exptime, res + 2, hv);
         if (new_it == 0) {
             do_item_remove(it);
             return EOM;
@@ -3245,7 +3243,7 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
            need to update the CAS on the existing item. */
         mutex_lock(&cache_lock); /* FIXME */
         ITEM_set_cas(it, (settings.use_cas) ? get_cas_id() : 0);
-        pthread_mutex_unlock(&cache_lock);
+        mutex_unlock(&cache_lock);
 
         memcpy(ITEM_data(it), buf, res);
         memset(ITEM_data(it) + res, ' ', it->nbytes - res - 2);
@@ -3336,9 +3334,9 @@ static void process_slabs_automove_command(conn *c, token_t *tokens, const size_
 
     level = strtoul(tokens[2].value, NULL, 10);
     if (level == 0) {
-        settings.slab_automove = false;
-    } else if (level == 1) {
-        settings.slab_automove = true;
+        settings.slab_automove = 0;
+    } else if (level == 1 || level == 2) {
+        settings.slab_automove = level;
     } else {
         out_string(c, "ERROR");
         return;
@@ -3492,12 +3490,6 @@ static void process_command(conn *c, char *command) {
                 break;
             case REASSIGN_NOSPARE:
                 out_string(c, "NOSPARE source class has no spare pages");
-                break;
-            case REASSIGN_DEST_NOT_FULL:
-                out_string(c, "NOTFULL dest class has spare memory");
-                break;
-            case REASSIGN_SRC_NOT_SAFE:
-                out_string(c, "UNSAFE src class is in an unsafe state");
                 break;
             case REASSIGN_SRC_DST_SAME:
                 out_string(c, "SAME src and dst class are identical");
@@ -4807,7 +4799,7 @@ static int enable_large_pages(void) {
 
     return ret;
 #else
-    return 0;
+    return -1;
 #endif
 }
 
@@ -5028,6 +5020,10 @@ int main (int argc, char **argv) {
         case 'L' :
             if (enable_large_pages() == 0) {
                 preallocate = true;
+            } else {
+                fprintf(stderr, "Cannot enable large pages on this system\n"
+                    "(There is no Linux support as of this version)\n");
+                return 1;
             }
             break;
         case 'C' :
@@ -5117,7 +5113,15 @@ int main (int argc, char **argv) {
                 settings.slab_reassign = true;
                 break;
             case SLAB_AUTOMOVE:
-                settings.slab_automove = true;
+                if (subopts_value == NULL) {
+                    settings.slab_automove = 1;
+                    break;
+                }
+                settings.slab_automove = atoi(subopts_value);
+                if (settings.slab_automove < 0 || settings.slab_automove > 2) {
+                    fprintf(stderr, "slab_automove must be between 0 and 2\n");
+                    return 1;
+                }
                 break;
             default:
                 printf("Illegal suboption \"%s\"\n", subopts_value);
