@@ -8,11 +8,24 @@
 # Source function library.
 . /etc/rc.d/init.d/functions
 
-PORT=11211
+NODES=`ls -ld /sys/devices/system/node/node* | wc -l`
+
+# Defaults, overriden in sysconfig
+START_PORT=11411
 USER=nobody
-MAXCONN=1024
-CACHESIZE=64
+MAXCONN=10000
+# CACHESIZE=64
+INSTANCES=2
 OPTIONS=""
+
+# By default, use 94% of (node memory - 500meg reserve) in each node
+PERNODEMEM=`grep MemTotal /sys/devices/system/node/node0/meminfo | awk '{print $4}'`
+let CACHESIZE=(${PERNODEMEM}-500*1024)*94/100/1024/${INSTANCES}
+
+# set threads; counting hyperthreaded cores as well
+CORES="$(grep ^processor /proc/cpuinfo | wc -l)"
+THREADS=$((CORES / INSTANCES))
+[[ "$THREADS" -eq 0 ]] && THREADS=1
 
 if [ -f /etc/sysconfig/memcached ];then
     . /etc/sysconfig/memcached
@@ -28,23 +41,38 @@ RETVAL=0
 prog="memcached"
 
 start () {
-    echo -n $"Starting $prog: "
-    # insure that /var/run/memcached has proper permissions
     chown $USER /var/run/memcached
-    daemon memcached -d -p $PORT -u $USER  -m $CACHESIZE -c $MAXCONN -P /var/run/memcached/memcached.pid $OPTIONS
-    RETVAL=$?
-    echo
-    [ $RETVAL -eq 0 ] && touch /var/lock/subsys/memcached
+    PORT=${START_PORT}
+    for i in `seq 1 ${INSTANCES}`; do
+        pidfile=/var/run/memcached/memcached.${PORT}.pid
+        lockfile=/var/lock/subsys/memcached${PORT}
+        echo -n $"Starting $prog on port ${PORT}: "
+        if [ ${NODES} -gt 1 ]; then
+            echo 100 > /sys/kernel/mm/redhat_transparent_hugepage/khugepaged/scan_sleep_millisecs
+            let NODE=${i}-1
+            PORT=${PORT} daemon --check=memcached numactl --cpunodebind=${NODE} --preferred=${NODE} memcached -d -p $PORT -u $USER  -m $CACHESIZE -c $MAXCONN -t "$THREADS" -P $pidfile $OPTIONS
+        else
+            PORT=${PORT} daemon --check=memcached memcached -d -p $PORT -u $USER  -m $CACHESIZE -c $MAXCONN -t "$THREADS" -P $pidfile $OPTIONS
+        fi
+        RETVAL=$?
+        echo
+        [ $RETVAL = 0 ] && touch ${lockfile}
+        let PORT=${PORT}+1
+    done
 }
+
 stop () {
-    echo -n $"Stopping $prog: "
-    killproc memcached
-    RETVAL=$?
-    echo
-    if [ $RETVAL -eq 0 ] ; then
-        rm -f /var/lock/subsys/memcached
-        rm -f /var/run/memcached.pid
-    fi
+    PORT=${START_PORT}
+    for i in `seq 1 ${INSTANCES}`; do
+        pidfile=/var/run/memcached/memcached.${PORT}.pid
+        lockfile=/var/lock/subsys/memcached${PORT}
+        echo -n $"Stopping $prog on port ${PORT}: "
+        killproc -p "${pidfile}" memcached
+        RETVAL=$?
+        echo
+        [ $RETVAL = 0 ] && rm -f ${lockfile} ${pidfile}
+        let PORT=${PORT}+1
+    done
 }
 
 restart () {
