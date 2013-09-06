@@ -6,7 +6,7 @@ Summary:        High Performance, Distributed Memory Object Cache with SFlow
 Group:          System Environment/Daemons
 License:        BSD
 URL:            https://github.com/jdi-tagged/memcached
-Source0:        %{name}-%{version}.tar.gz
+Source0:        %{name}-@FULLVERSION@.tar.gz
 BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 BuildRequires:  TAGlibevent-devel > 2.0
