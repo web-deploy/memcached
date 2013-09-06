@@ -4,7 +4,7 @@
 use warnings;
 use strict;
 
-my $version = `git describe`;
+my $version = `git describe --match "[0-9].*"`;
 chomp $version;
 # Test the various versions.
 #my $version = 'foob';
