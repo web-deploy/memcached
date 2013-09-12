@@ -15,12 +15,13 @@ START_PORT=11411
 USER=nobody
 MAXCONN=10000
 # CACHESIZE=64
-INSTANCES=2
+INSTANCES=$NODES
+[[ "$INSTANCES" -lt 2 ]] && INSTANCES=2
 OPTIONS=""
 
-# By default, use 94% of (node memory - 500meg reserve) in each node
-PERNODEMEM=`grep MemTotal /sys/devices/system/node/node0/meminfo | awk '{print $4}'`
-let CACHESIZE=(${PERNODEMEM}-500*1024)*94/100/1024/${INSTANCES}
+# By default, use 94% of (memory - 500meg reserve), divided among instances
+MEM=`grep MemTotal /proc/meminfo | awk '{print $2}'`
+let CACHESIZE=(${MEM}-500*1024)*94/100/1024/${INSTANCES}
 
 # set threads; counting hyperthreaded cores as well
 CORES="$(grep ^processor /proc/cpuinfo | wc -l)"
