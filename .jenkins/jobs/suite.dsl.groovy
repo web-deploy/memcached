@@ -9,7 +9,7 @@ def memcached_project = new Project(
         githubOwner: 'jdi-tagged',
         githubProject: 'memcached',
         githubHost: 'github.com',
-        hipchatRoom:'eng',
+        hipchatRoom:'PetsDev',
         email: 'jirwin@tagged.com'
     ]
 )
@@ -18,19 +18,19 @@ def memcached = memcached_project.downstreamJob {
     label 'old-java && centos5'
     steps{
         shell '''
-			bash << _EOF_
-			./autogen.sh
-			./configure
-			make dist
-			rm -rf SOURCES SPECS BUILD BUILDROOT RPMS SRPMS
-			mkdir SOURCES
-			mv *tar.gz SOURCES
-			echo workspace "$WORKSPACE"
-			rpmbuild \
-			           --define "_topdir $WORKSPACE" \
-			           --define "release `date +%Y%m%d%H%M%S`" \
-			           -ba memcached.spec
-			_EOF_
+            bash << _EOF_
+            ./autogen.sh
+            ./configure
+            make dist
+            rm -rf SOURCES SPECS BUILD BUILDROOT RPMS SRPMS
+            mkdir SOURCES
+            mv *tar.gz SOURCES
+            echo workspace "$WORKSPACE"
+            rpmbuild \
+                       --define "_topdir $WORKSPACE" \
+                       --define "release `date +%Y%m%d%H%M%S`" \
+                       -ba memcached.spec
+            _EOF_
         '''
     }
     triggers {
