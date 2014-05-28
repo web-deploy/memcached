@@ -17,8 +17,8 @@ def memcached = memcached_project.downstreamJob {
     jdk 'default'
     label 'orc01'
     steps{
-        shell
-'''bash << _EOF_
+        shell '''
+bash << _EOF_
 ./autogen.sh
 ./configure
 make dist
