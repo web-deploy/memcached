@@ -15,22 +15,22 @@ def memcached_project = new Project(
 )
 def memcached = memcached_project.downstreamJob {
     jdk 'default'
-    label 'old-java && centos5'
+    label 'orc01'
     steps{
         shell '''
-            bash << _EOF_
-            ./autogen.sh
-            ./configure
-            make dist
-            rm -rf SOURCES SPECS BUILD BUILDROOT RPMS SRPMS
-            mkdir SOURCES
-            mv *tar.gz SOURCES
-            echo workspace "$WORKSPACE"
-            rpmbuild \
-                       --define "_topdir $WORKSPACE" \
-                       --define "release `date +%Y%m%d%H%M%S`" \
-                       -ba memcached.spec
-            _EOF_
+bash << _EOF_
+./autogen.sh
+./configure
+make dist
+rm -rf SOURCES SPECS BUILD BUILDROOT RPMS SRPMS
+mkdir SOURCES
+mv *tar.gz SOURCES
+echo workspace "$WORKSPACE"
+rpmbuild \
+           --define "_topdir $WORKSPACE" \
+           --define "release `date +%Y%m%d%H%M%S`" \
+           -ba memcached.spec
+_EOF_
         '''
     }
     triggers {
