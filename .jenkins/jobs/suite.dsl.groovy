@@ -26,9 +26,9 @@ rm -rf SOURCES SPECS BUILD BUILDROOT RPMS SRPMS
 mkdir SOURCES
 mv *tar.gz SOURCES
 echo workspace "$WORKSPACE"
-rpmbuild \
-           --define "_topdir $WORKSPACE" \
-           --define "release `date +%Y%m%d%H%M%S`" \
+rpmbuild \\
+           --define "_topdir $WORKSPACE" \\
+           --define "release `date +%Y%m%d%H%M%S`" \\
            -ba memcached.spec
 _EOF_'''
     }
